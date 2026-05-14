@@ -8,7 +8,7 @@ import csv
 import re
 import time
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import requests
 from bs4 import BeautifulSoup, NavigableString, Tag
@@ -54,6 +54,82 @@ DESTINATION_SCRAPES: list[tuple[str, tuple[str, ...]]] = [
 DESTINATIONS: list[str] = [name for name, _ in DESTINATION_SCRAPES]
 SECTIONS = ["See", "Do", "Eat", "Drink", "Sleep"]
 
+#when main sleep is thin, follow at most this many district articles for sleep-only scrapes
+MAX_DISTRICT_SLEEP_FETCH = 8
+
+#sleep is "weak" if we should try district pages (heuristic)
+SLEEP_WEAK_MAX_ROWS = 4
+SLEEP_WEAK_AVG_DESC_LEN = 45
+SLEEP_WEAK_AVG_DESC_ROWS_CAP = 10
+
+#sleep: lodging-ish tokens in title or start of blurb (not exhaustive, just a nudge)
+LODGING_VOCAB = (
+    "hotel",
+    "motel",
+    "hostel",
+    "inn",
+    "lodge",
+    "resort",
+    "suite",
+    "suites",
+    "residence",
+    "guesthouse",
+    "guest house",
+    "ryokan",
+    "b&b",
+    "b and b",
+    "pension",
+    "aparthotel",
+    "apartment hotel",
+    "serviced apartment",
+    "capsule",
+    "boutique hotel",
+    "boutique ",
+    "palace hotel",
+    "tower hotel",
+    "plaza hotel",
+    "lodging",
+    "accommodation",
+)
+
+_SLEEP_GUIDE_OPENERS = re.compile(
+    r"^(visitors\s+|the\s+city\s+|many\s+(of\s+)?the\s+|there\s+are\s+|you\s+can\s+|if\s+you\s+|"
+    r"for\s+accommodation|accommodation\s+in\s+the|sleeping\s+options|places\s+to\s+stay\s+(can|may)|"
+    r"lodging\s+is\s+mostly|hotels\s+tend\s+to|the\s+area\s+has\s+many|options\s+range\s+from)",
+    re.I,
+)
+
+_INFER_TITLE_BAD_STARTS = (
+    "the ",
+    "see ",
+    "for ",
+    "visit ",
+    "many ",
+    "there ",
+    "visitors ",
+    "if you",
+    "accommodation",
+    "hotels in",
+    "hotel options",
+    "sleeping ",
+    "options ",
+    "most ",
+    "some ",
+)
+
+_BAD_WIKI_NS = frozenset(
+    {
+        "file",
+        "template",
+        "category",
+        "special",
+        "help",
+        "wikivoyage",
+        "mediawiki",
+        "user",
+    }
+)
+
 #wikivoyage boilerplate we never want in a recommendation csv
 SKIP_SUBSTRINGS = (
     "please add places",
@@ -78,6 +154,12 @@ SKIP_SUBSTRINGS = (
     "redirected from",
     "template:",
     "mw:extension",
+    "please add places to sleep",
+    "please add places",
+    "accommodation options in",
+    "sleeping options",
+    "places to stay can",
+    "listings have been moved",
 )
 
 #h3-style subsection labels that are not real place names
@@ -319,11 +401,239 @@ def _row_is_useful(title: str, desc: str) -> bool:
     return True
 
 
+def _infer_sleep_title(title: str, desc: str) -> str:
+    #wikivoyage sometimes leaves sleep bullets with no bold name; grab a short head phrase
+    t = clean_ws(strip_edit_markers(title))
+    if len(t) >= MIN_TITLE_LEN:
+        return t
+    d = clean_ws(strip_edit_markers(desc))
+    if len(d) < 24:
+        return t
+
+    def _bad_start(chunk: str) -> bool:
+        low = chunk.lower().strip()
+        return any(low.startswith(p) for p in _INFER_TITLE_BAD_STARTS)
+
+    for sep in (".", "—", "–", "\n"):
+        if sep in d[:180]:
+            chunk = d.split(sep, 1)[0].strip()
+            if MIN_TITLE_LEN <= len(chunk) <= MAX_TITLE_LEN and not _bad_start(chunk):
+                return chunk
+    m = re.match(r"^([^,]{5,80}),\s", d)
+    if m:
+        chunk = m.group(1).strip()
+        if MIN_TITLE_LEN <= len(chunk) <= MAX_TITLE_LEN and not _bad_start(chunk):
+            return chunk
+    words = d.split()
+    if len(words) >= 3:
+        head = " ".join(words[:5]).strip(" ,;—")
+        if MIN_TITLE_LEN <= len(head) <= MAX_TITLE_LEN and head[:1].isalpha() and head[0].isupper():
+            if not _bad_start(head):
+                return head
+    return t
+
+
+def _sleep_practical_signal(desc: str) -> bool:
+    d = desc.lower()
+    return any(
+        x in d
+        for x in (
+            "http",
+            "www.",
+            ".com",
+            "tel",
+            "phone",
+            "+",
+            "/night",
+            " per night",
+            " a night",
+            " usd",
+            "$",
+            "¥",
+            "€",
+            "฿",
+            "★",
+            " stars",
+            " star ",
+        )
+    )
+
+
+def _sleep_lodging_vocab_signal(title: str, desc: str) -> bool:
+    blob = (title + " " + desc[:240]).lower()
+    return any(tok in blob for tok in LODGING_VOCAB)
+
+
+def _sleep_is_editorial_summary(title: str, desc: str) -> bool:
+    d = desc.strip()
+    lt = len(title.strip())
+    ld = len(d)
+    if ld > 520 and lt < 22:
+        return True
+    if ld > 720:
+        return True
+    if _SLEEP_GUIDE_OPENERS.match(d):
+        return True
+    if lt < 14 and ld > 220 and not _sleep_lodging_vocab_signal(title, desc):
+        return True
+    return False
+
+
+def _sleep_likely_place_listing(title: str, desc: str) -> bool:
+    if _sleep_is_editorial_summary(title, desc):
+        return False
+    if _has_boilerplate(title) or _has_boilerplate(desc):
+        return False
+    words = len(desc.split())
+    if words < 5:
+        return False
+    if _sleep_lodging_vocab_signal(title, desc):
+        return True
+    if _sleep_practical_signal(desc) and len(title.strip()) >= 5:
+        return True
+    return False
+
+
+def _sleep_usable_for_stay_raw(likely: bool, title: str, desc: str) -> bool:
+    #scraper-side gate; build_dataset still applies content_score + stay signals
+    if not likely:
+        return False
+    if len(desc.strip()) < 28:
+        return False
+    return True
+
+
+def _wiki_title_from_href(href: str) -> str | None:
+    if not href or not isinstance(href, str):
+        return None
+    href = href.strip()
+    if href.startswith("#"):
+        return None
+    if href.startswith("//"):
+        href = "https:" + href
+    if "wikivoyage.org/wiki/" in href:
+        path = href.split("wikivoyage.org/wiki/", 1)[1]
+    elif href.startswith("/wiki/"):
+        path = href.split("/wiki/", 1)[1]
+    else:
+        return None
+    path = path.split("#")[0].split("?")[0]
+    if not path:
+        return None
+    parts = path.split("/")
+    head = unquote(parts[0].replace("_", " "))
+    if ":" in head:
+        ns = head.split(":", 1)[0].strip().lower()
+        if ns in _BAD_WIKI_NS:
+            return None
+    title = "/".join(unquote(p).replace("_", " ") for p in parts)
+    t = title.strip()
+    return t or None
+
+
+def sleep_rows_weak(rows: list[dict[str, str]]) -> bool:
+    sleep = [r for r in rows if r.get("section") == "Sleep"]
+    likely_sleep = [r for r in sleep if int(str(r.get("likely_place_listing", "0") or "0")) == 1]
+    nl = len(likely_sleep)
+    if nl < SLEEP_WEAK_MAX_ROWS:
+        return True
+    if nl < SLEEP_WEAK_AVG_DESC_ROWS_CAP:
+        avg = sum(len(r.get("description", "")) for r in likely_sleep) / max(1, nl)
+        if avg < SLEEP_WEAK_AVG_DESC_LEN:
+            return True
+    return False
+
+
+def _districts_h2(content: Tag) -> Tag | None:
+    h = content.find("h2", id="Districts")
+    if h:
+        return h
+    for h in content.find_all("h2"):
+        if clean_ws(strip_edit_markers(h.get_text(" ", strip=True))) == "Districts":
+            return h
+    return None
+
+
+def _districts_section_wiki_links(h2: Tag) -> list[str]:
+    out: list[str] = []
+    start = heading_block(h2)
+    for sib in start.next_siblings:
+        if isinstance(sib, Tag) and is_next_top_section(sib):
+            break
+        if not isinstance(sib, Tag):
+            continue
+        for a in sib.find_all("a", href=True):
+            t = _wiki_title_from_href(str(a.get("href") or ""))
+            if t:
+                out.append(t)
+    return out
+
+
+def _subpage_titles_under_main(content: Tag, main_title: str) -> list[str]:
+    slug_prefix = "/wiki/" + main_title.replace(" ", "_") + "/"
+    seen: set[str] = set()
+    out: list[str] = []
+    for a in content.find_all("a", href=True):
+        href = str(a.get("href") or "")
+        if not href.startswith(slug_prefix):
+            continue
+        t = _wiki_title_from_href(href)
+        if not t or t == main_title:
+            continue
+        if t not in seen:
+            seen.add(t)
+            out.append(t)
+    return out
+
+
+def discover_district_titles(main_title: str, soup: BeautifulSoup) -> list[str]:
+    #districts h2 links first, then any City/Subpage hrefs in the parser output
+    content = main_parser_output(soup)
+    if not content:
+        return []
+    ordered: list[str] = []
+    seen: set[str] = set()
+
+    def add(t: str) -> None:
+        if not t or t in seen:
+            return
+        seen.add(t)
+        ordered.append(t)
+
+    h2d = _districts_h2(content)
+    if h2d:
+        for t in _districts_section_wiki_links(h2d):
+            add(t)
+    for t in _subpage_titles_under_main(content, main_title):
+        add(t)
+    return ordered
+
+
+def dedupe_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    seen: set[tuple[str, str, str, str]] = set()
+    out: list[dict[str, str]] = []
+    for r in rows:
+        key = (
+            str(r.get("destination", "")).strip().casefold(),
+            str(r.get("section", "")).strip(),
+            str(r.get("title", "")).strip().casefold(),
+            str(r.get("description", ""))[:200].strip().casefold(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+    return out
+
+
 def extract_section_rows(
     content: Tag,
     source_url: str,
     destination: str,
     section_id: str,
+    *,
+    source_page_title: str,
+    page_type: str,
 ) -> list[dict[str, str]]:
     h2 = content.find("h2", id=section_id)
     if not h2:
@@ -343,8 +653,18 @@ def extract_section_rows(
     for title, desc in pairs:
         title = strip_edit_markers(clean_ws(title))
         desc = strip_edit_markers(clean_ws(desc))
+        if section_id == "Sleep":
+            title = _infer_sleep_title(title, desc)
+        if not title or len(title.strip()) < MIN_TITLE_LEN:
+            continue
         if not _row_is_useful(title, desc):
             continue
+        likely_flag = 0
+        usable_flag = 0
+        if section_id == "Sleep":
+            likely_b = _sleep_likely_place_listing(title, desc)
+            likely_flag = 1 if likely_b else 0
+            usable_flag = 1 if _sleep_usable_for_stay_raw(likely_b, title, desc) else 0
         key = (title.lower(), desc[:160].lower())
         if key in seen:
             continue
@@ -352,23 +672,45 @@ def extract_section_rows(
         rows.append(
             {
                 "destination": destination,
+                "source_page_title": source_page_title,
+                "page_type": page_type,
                 "section": section_id,
                 "title": title,
                 "description": desc,
+                "likely_place_listing": str(likely_flag),
+                "usable_for_stay": str(usable_flag),
                 "source_url": source_url,
             }
         )
     return rows
 
 
-def extract_page(html: str, source_url: str, destination: str) -> list[dict[str, str]]:
+def extract_page(
+    html: str,
+    source_url: str,
+    destination: str,
+    *,
+    source_page_title: str,
+    page_type: str,
+    sections: list[str] | None = None,
+) -> list[dict[str, str]]:
     soup = BeautifulSoup(html, "lxml")
     content = main_parser_output(soup)
     if not content:
         return []
     out: list[dict[str, str]] = []
-    for sec in SECTIONS:
-        out.extend(extract_section_rows(content, source_url, destination, sec))
+    sec_list = sections if sections is not None else SECTIONS
+    for sec in sec_list:
+        out.extend(
+            extract_section_rows(
+                content,
+                source_url,
+                destination,
+                sec,
+                source_page_title=source_page_title,
+                page_type=page_type,
+            )
+        )
     return out
 
 
@@ -377,13 +719,84 @@ def scrape_all() -> Path:
     all_rows: list[dict[str, str]] = []
 
     for canonical, wiki_titles in DESTINATION_SCRAPES:
-        for wiki_title in wiki_titles:
-            url = page_url(wiki_title)
-            time.sleep(1.0)
-            html = fetch_html(url)
-            all_rows.extend(extract_page(html, url, canonical))
+        if not wiki_titles:
+            continue
+        primary = wiki_titles[0]
+        extras = list(wiki_titles[1:])
+        extras_cf = {x.casefold() for x in extras}
 
-    fieldnames = ["destination", "section", "title", "description", "source_url"]
+        time.sleep(1.0)
+        primary_url = page_url(primary)
+        primary_html = fetch_html(primary_url)
+        primary_soup = BeautifulSoup(primary_html, "lxml")
+
+        primary_rows = extract_page(
+            primary_html,
+            primary_url,
+            canonical,
+            source_page_title=primary,
+            page_type="main_city_page",
+        )
+        all_rows.extend(primary_rows)
+
+        if sleep_rows_weak(primary_rows):
+            candidates = discover_district_titles(primary, primary_soup)
+            fetched = 0
+            for dt in candidates:
+                if dt.casefold() == primary.casefold():
+                    continue
+                if dt.casefold() in extras_cf:
+                    continue
+                if fetched >= MAX_DISTRICT_SLEEP_FETCH:
+                    break
+                durl = page_url(dt)
+                time.sleep(1.0)
+                try:
+                    dhtml = fetch_html(durl)
+                except requests.RequestException:
+                    continue
+                all_rows.extend(
+                    extract_page(
+                        dhtml,
+                        durl,
+                        canonical,
+                        source_page_title=dt,
+                        page_type="district_page",
+                        sections=["Sleep"],
+                    )
+                )
+                fetched += 1
+
+        for ex in extras:
+            time.sleep(1.0)
+            ex_url = page_url(ex)
+            try:
+                ex_html = fetch_html(ex_url)
+            except requests.RequestException:
+                continue
+            all_rows.extend(
+                extract_page(
+                    ex_html,
+                    ex_url,
+                    canonical,
+                    source_page_title=ex,
+                    page_type="district_page",
+                )
+            )
+
+    all_rows = dedupe_rows(all_rows)
+
+    fieldnames = [
+        "destination",
+        "source_page_title",
+        "page_type",
+        "section",
+        "title",
+        "description",
+        "likely_place_listing",
+        "usable_for_stay",
+        "source_url",
+    ]
     with OUT_CSV.open("w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()

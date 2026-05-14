@@ -2,19 +2,23 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import html
 import json
 import math
 import re
 import time
+from pathlib import Path
 
 import streamlit as st
 
 from planner import (
     build_checklist,
     clean_description_for_display,
+    format_usd_range,
     get_recommendations,
+    polish_stay_description_for_display,
     supported_destinations,
 )
 
@@ -36,6 +40,22 @@ SOMNIA_LOADER_HTML = """
   <div class="somnia-loader-shimmer" aria-hidden="true"><span></span></div>
 </div>
 """
+
+
+def _cloudy_sunday_font_face_css() -> str:
+    #inline otf so streamlit does not need extra static routes; falls back silently if file missing
+    p = Path(__file__).resolve().parent / "assets" / "fonts" / "CloudySunday.otf"
+    if not p.is_file():
+        return ""
+    try:
+        b64 = base64.b64encode(p.read_bytes()).decode("ascii")
+    except OSError:
+        return ""
+    return (
+        '@font-face{font-family:"CloudySunday";src:url("data:application/x-font-opentype;base64,'
+        + b64
+        + '") format("opentype");font-weight:400;font-style:normal;font-display:swap;}'
+    )
 
 
 def inject_styles() -> None:
@@ -74,7 +94,7 @@ def inject_styles() -> None:
             scroll-padding-top: 4.5rem;
         }
         .block-container {
-            padding-top: 1rem;
+            padding-top: 0.5rem;
             padding-bottom: 3.5rem;
             max-width: min(1320px, 96vw);
             padding-left: 1.5rem;
@@ -160,12 +180,27 @@ def inject_styles() -> None:
         }
         section.main [data-testid="stForm"] {
             border-radius: 24px !important;
-            padding: 1.35rem 1.4rem 1.5rem !important;
-            margin: 0 0 1.25rem !important;
-            background: rgba(22, 26, 42, 0.5) !important;
-            border: 1px solid rgba(120, 100, 170, 0.22) !important;
+            padding: 1.85rem clamp(1.5rem, 4.2vw, 2.85rem) 1.95rem !important;
+            margin: 0 0 1.35rem !important;
+            background: rgba(22, 26, 42, 0.52) !important;
+            border: 1px solid rgba(120, 100, 170, 0.26) !important;
             box-shadow: 0 16px 48px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
             backdrop-filter: blur(14px);
+        }
+        section.main [data-testid="stForm"] [data-testid="stVerticalBlock"] {
+            gap: 1.05rem !important;
+        }
+        section.main [data-testid="stForm"] [data-baseweb="form-control"] label p,
+        section.main [data-testid="stForm"] [data-testid="stWidgetLabel"] p {
+            font-weight: 600 !important;
+            letter-spacing: 0.03em !important;
+            color: #d2daf2 !important;
+        }
+        section.main [data-testid="stForm"] [data-testid="stNumberInput"] label p,
+        section.main [data-testid="stForm"] [data-testid="stSelectbox"] label p,
+        section.main [data-testid="stForm"] [data-testid="stTextInput"] label p,
+        section.main [data-testid="stForm"] [data-testid="stTextArea"] label p {
+            font-size: 0.84rem !important;
         }
         section.main .stCheckbox label {
             color: #c8d2ec !important;
@@ -301,11 +336,8 @@ def inject_styles() -> None:
             font-weight: 600;
         }
         .somnia-title {
-            font-family: "Fraunces", Georgia, serif;
             margin: 0;
-            font-size: clamp(2.75rem, 10vw, 5.75rem);
-            font-weight: 600;
-            letter-spacing: -0.035em;
+            letter-spacing: -0.02em;
             line-height: 1.02;
             color: #f2efff;
             text-shadow: 0 4px 40px rgba(80, 60, 140, 0.45);
@@ -338,18 +370,18 @@ def inject_styles() -> None:
             scroll-margin-top: 5rem;
         }
         .somnia-form-eyebrow {
-            font-size: 0.68rem;
-            letter-spacing: 0.12em;
-            text-transform: none;
-            color: #9aa8cc;
-            font-weight: 600;
-            margin: 0 0 0.75rem;
+            font-size: 0.78rem;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            color: #a8b6e0;
+            font-weight: 700;
+            margin: 0 0 1rem;
         }
         .somnia-dataset-note {
-            font-size: 0.82rem;
-            color: #7d8db0;
-            margin: 0 0 1.1rem;
-            line-height: 1.45;
+            font-size: 0.84rem;
+            color: #8b9bc4;
+            margin: 0 0 1.25rem;
+            line-height: 1.55;
         }
         .somnia-loader-card {
             position: relative;
@@ -696,7 +728,7 @@ def inject_styles() -> None:
         }
         .stApp [data-testid="stTabs"],
         section.main [data-testid="stTabs"] {
-            margin: 0 0 0.9rem !important;
+            margin: 0 0 0.45rem !important;
             padding: 0 !important;
             border: none !important;
             box-shadow: none !important;
@@ -715,14 +747,14 @@ def inject_styles() -> None:
             display: flex;
             flex-direction: column;
             /*keep a tiny flex gap for layout quirks; main air below nav is on tab panels*/
-            gap: 0.35rem;
+            gap: 0.2rem;
         }
-        /*big vertical pause below the nav card, above tab body (Prep headline, itinerary, etc.)*/
+        /*vertical space below tab row before tab body*/
         .stApp [data-testid="stTabs"] [data-baseweb="tab-panel"],
         section.main [data-testid="stTabs"] [data-baseweb="tab-panel"],
         .stApp [data-testid="stTabs"] [role="tabpanel"],
         section.main [data-testid="stTabs"] [role="tabpanel"] {
-            padding-top: 3rem !important;
+            padding-top: 1.5rem !important;
         }
         /*tabs-motion draws a full-width TabBorder under the row (borderColorLight); hide it, keep per-tab styling*/
         .stApp [data-testid="stTabs"] [data-baseweb*="tab-border"],
@@ -1062,77 +1094,193 @@ def inject_styles() -> None:
         }
         ul.day-card__acts li { margin-bottom: 0.55rem; }
         ul.day-card__acts li:last-child { margin-bottom: 0; }
+        .stay-tab-root {
+            margin: 0;
+            padding: 0;
+        }
+        section.main [data-testid="stMarkdownContainer"] .stay-tab-root {
+            margin-bottom: 0;
+        }
         .stay-stack {
             display: flex;
             flex-direction: column;
-            gap: 1.1rem;
+            gap: 0.95rem;
+        }
+        .stay-stack--splurge-trip {
+            gap: 1.05rem;
         }
         .stay-card {
-            border-radius: 22px;
-            border: 1px solid rgba(120, 100, 160, 0.28);
-            background: linear-gradient(155deg, rgba(38, 34, 62, 0.65) 0%, rgba(28, 34, 54, 0.72) 100%);
-            box-shadow: 0 14px 40px rgba(0, 0, 0, 0.28);
-            padding: 1.1rem 1.25rem 1.15rem;
-            border-left: 4px solid rgba(140, 120, 200, 0.45);
-            backdrop-filter: blur(12px);
+            position: relative;
+            border-radius: 18px;
+            border: 1px solid rgba(138, 128, 178, 0.2);
+            background: linear-gradient(
+                168deg,
+                rgba(44, 40, 68, 0.38) 0%,
+                rgba(34, 38, 58, 0.48) 42%,
+                rgba(28, 32, 50, 0.44) 100%
+            );
+            box-shadow:
+                0 12px 32px rgba(0, 0, 0, 0.16),
+                inset 0 1px 0 rgba(255, 255, 255, 0.065);
+            padding: 1.05rem 1.15rem 1.1rem;
+            border-left: 3px solid rgba(168, 148, 218, 0.42);
+            backdrop-filter: blur(18px) saturate(1.06);
+        }
+        .stay-card--splurge {
+            border-left-color: rgba(218, 188, 148, 0.72);
+            border-color: rgba(150, 128, 118, 0.22);
+            background: linear-gradient(
+                168deg,
+                rgba(50, 44, 58, 0.48) 0%,
+                rgba(38, 36, 54, 0.5) 48%,
+                rgba(30, 32, 50, 0.46) 100%
+            );
+            box-shadow:
+                0 14px 36px rgba(0, 0, 0, 0.2),
+                inset 0 1px 0 rgba(255, 236, 220, 0.055),
+                0 0 0 1px rgba(200, 170, 130, 0.07);
         }
         .stay-card__head {
             display: flex;
             align-items: flex-start;
             justify-content: space-between;
-            gap: 0.75rem;
-            margin-bottom: 0.35rem;
+            gap: 0.55rem 0.85rem;
+            flex-wrap: wrap;
+            margin: 0 0 0.32rem;
         }
-        .stay-card__kicker {
-            font-size: var(--somnia-fs-cap);
-            letter-spacing: 0.06em;
-            text-transform: none;
-            font-weight: 700;
-            color: #9aa8cc;
-        }
-        .stay-band-pill {
-            flex-shrink: 0;
-            font-size: var(--somnia-fs-cap);
-            font-weight: 700;
-            letter-spacing: 0.04em;
-            text-transform: none;
-            padding: 0.28rem 0.55rem;
-            border-radius: 999px;
-            background: rgba(50, 48, 78, 0.75);
-            border: 1px solid rgba(130, 115, 175, 0.35);
-            color: #d4ccf0;
-        }
-        .stay-card__title {
+        .stay-card__head .stay-card__title {
             margin: 0;
+            flex: 1 1 12rem;
+            min-width: 0;
             font-weight: 600;
-            color: #f4f2ff;
-            font-size: var(--somnia-fs-title);
-            line-height: 1.3;
-            letter-spacing: -0.02em;
+            color: #fdfbff;
+            font-size: clamp(1.08rem, 2.5vw, 1.38rem);
+            line-height: 1.22;
+            letter-spacing: -0.038em;
             word-wrap: break-word;
             overflow-wrap: anywhere;
         }
-        .stay-card__desc {
-            margin: 0.5rem 0 0;
-            color: #aeb9dd;
-            font-size: var(--somnia-fs-body);
+        .stay-card__budget-tag {
+            flex-shrink: 0;
+            margin-top: 0.08rem;
+            font-size: 0.76rem;
+            font-weight: 700;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            padding: 0.34rem 0.68rem;
+            border-radius: 999px;
+            background: linear-gradient(145deg, rgba(72, 64, 108, 0.72) 0%, rgba(52, 50, 82, 0.78) 100%);
+            border: 1px solid rgba(160, 140, 210, 0.55);
+            color: #f4f0ff;
+            white-space: nowrap;
+            box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06) inset, 0 4px 14px rgba(0, 0, 0, 0.22);
+        }
+        .stay-card__budget-tag--muted {
+            background: linear-gradient(145deg, rgba(58, 56, 78, 0.75) 0%, rgba(44, 44, 62, 0.82) 100%);
+            border-color: rgba(120, 118, 150, 0.45);
+            color: #d4d8ec;
+            font-weight: 700;
+            opacity: 1;
+        }
+        .stay-card--splurge .stay-card__budget-tag {
+            background: linear-gradient(145deg, rgba(92, 72, 58, 0.78) 0%, rgba(62, 48, 44, 0.85) 100%);
+            border-color: rgba(220, 175, 130, 0.55);
+            color: #fff5e8;
+            box-shadow: 0 0 0 1px rgba(255, 220, 190, 0.08) inset, 0 4px 16px rgba(0, 0, 0, 0.28);
+        }
+        .stay-card__facts {
+            list-style: none;
+            margin: 0.18rem 0 0;
+            padding: 0;
+        }
+        .stay-card__facts li {
+            display: grid;
+            grid-template-columns: 7.75rem 1fr;
+            gap: 0.35rem 0.75rem;
+            align-items: baseline;
+            margin: 0.26rem 0 0;
+            font-size: 0.9rem;
+            line-height: 1.42;
+            color: #dce4f8;
+        }
+        .stay-card__facts li:first-child {
+            margin-top: 0;
+        }
+        .stay-card__fact-k {
+            font-size: 0.7rem;
+            font-weight: 600;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: #7a8aa8;
+        }
+        .stay-card__fact-v {
+            font-weight: 500;
+            font-variant-numeric: tabular-nums;
+            word-wrap: break-word;
+            overflow-wrap: anywhere;
+            color: #e8ecf8;
+        }
+        .stay-card__fact-v--stars {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 0.35rem 0.65rem;
+        }
+        .stay-card__stars-num {
+            font-weight: 600;
+            font-variant-numeric: tabular-nums;
+            color: #f0f2ff;
+        }
+        .stay-card__stars-vis {
+            font-size: 0.92rem;
+            letter-spacing: 0.12em;
+            color: #e8c878;
+            text-shadow: 0 0 14px rgba(232, 200, 120, 0.28);
+        }
+        .stay-stack__foot-note {
+            margin: 3.75rem 0 0;
+            padding-top: 0.55rem;
+            max-width: 40rem;
+            font-size: 0.82rem;
             line-height: 1.55;
-            word-wrap: break-word;
-            overflow-wrap: anywhere;
-            display: -webkit-box;
-            -webkit-line-clamp: 5;
-            -webkit-box-orient: vertical;
-            overflow: hidden;
+            color: #8b97b0;
         }
-        .stay-card__why {
-            margin: 0.45rem 0 0;
-            font-size: var(--somnia-fs-body);
-            line-height: 1.45;
-            color: #c8b8ec;
-            font-style: italic;
-            opacity: 0.95;
+        .stay-card__lead {
+            margin: 0;
+            color: #c8cee8;
+            font-size: 0.9375rem;
+            font-weight: 500;
+            line-height: 1.5;
+            letter-spacing: 0.01em;
             word-wrap: break-word;
             overflow-wrap: anywhere;
+        }
+        .stay-card__lead--muted {
+            color: #7d889e;
+            font-weight: 400;
+            font-style: italic;
+        }
+        .stay-empty {
+            border-radius: 24px;
+            border: 1px dashed rgba(120, 100, 160, 0.32);
+            background: linear-gradient(160deg, rgba(36, 34, 56, 0.42) 0%, rgba(26, 30, 48, 0.5) 100%);
+            padding: 1.65rem 1.45rem 1.55rem;
+            text-align: center;
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045);
+        }
+        .stay-empty__title {
+            margin: 0 0 0.55rem;
+            font-size: var(--somnia-fs-section);
+            font-weight: 600;
+            color: #ebe6ff;
+            letter-spacing: -0.02em;
+        }
+        .stay-empty__lede {
+            margin: 0 auto;
+            max-width: 36rem;
+            font-size: var(--somnia-fs-body);
+            line-height: 1.65;
+            color: #b6c2e5;
         }
         .prep-group-head {
             font-size: var(--somnia-fs-cap);
@@ -1145,106 +1293,230 @@ def inject_styles() -> None:
         .prep-group-head--first {
             margin-top: 0.35rem;
         }
+        .budget-snapshot {
+            width: 100%;
+            max-width: none;
+            margin: 0 0 0.5rem;
+        }
         .budget-card {
             border-radius: 22px;
             border: 1px solid rgba(110, 95, 155, 0.28);
-            background: rgba(26, 30, 48, 0.62);
-            padding: 1.1rem 1.2rem 1.15rem;
-            box-shadow: 0 14px 42px rgba(0, 0, 0, 0.28);
-            max-width: 560px;
-            backdrop-filter: blur(12px);
+            background: linear-gradient(
+                165deg,
+                rgba(34, 38, 58, 0.58) 0%,
+                rgba(24, 28, 46, 0.62) 100%
+            );
+            padding: clamp(1.65rem, 2.5vw, 2.15rem) clamp(1.35rem, 3.5vw, 2.5rem) clamp(1.75rem, 2.6vw, 2.25rem);
+            box-shadow: 0 20px 52px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.055);
+            backdrop-filter: blur(14px) saturate(1.04);
         }
         .budget-card--breakdown {
-            max-width: 640px;
+            max-width: none;
         }
-        .budget-head {
-            font-size: var(--somnia-fs-cap);
-            letter-spacing: 0.08em;
-            text-transform: none;
-            color: #9aa8cc;
+        .budget-snapshot__title {
+            margin: 0 0 1.1rem;
+            padding-bottom: 0.85rem;
+            border-bottom: 1px solid rgba(100, 92, 140, 0.28);
+            font-size: clamp(1.42rem, 2.4vw, 1.75rem);
             font-weight: 700;
-            margin-bottom: 0.4rem;
+            letter-spacing: -0.035em;
+            color: #faf8ff;
+            line-height: 1.12;
         }
-        .budget-lede {
-            margin: 0 0 0.65rem;
-            font-size: var(--somnia-fs-body);
-            font-weight: 400;
-            color: #aeb9dd;
-            line-height: 1.5;
+        .budget-snapshot__layout {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 1.65rem 0;
+            margin-top: 0.15rem;
+            align-items: start;
         }
-        .budget-table-wrap {
-            border-radius: 16px;
-            border: 1px solid rgba(100, 90, 140, 0.28);
-            overflow: hidden;
-            margin: 0.5rem 0 0.85rem;
-            background: rgba(20, 24, 40, 0.45);
+        @media (min-width: 880px) {
+            .budget-snapshot__layout {
+                grid-template-columns: minmax(11rem, 0.34fr) minmax(0, 1fr);
+                gap: 0 2.75rem;
+            }
+            .budget-snapshot__rail {
+                padding-right: 1.75rem;
+                border-right: 1px solid rgba(110, 100, 150, 0.28);
+            }
         }
-        table.budget-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: var(--somnia-fs-body);
+        @media (max-width: 879px) {
+            .budget-snapshot__rail {
+                padding-bottom: 1.15rem;
+                margin-bottom: 0.15rem;
+                border-bottom: 1px solid rgba(110, 100, 150, 0.22);
+            }
         }
-        table.budget-table th {
-            text-align: left;
-            font-size: var(--somnia-fs-cap);
-            letter-spacing: 0.06em;
-            text-transform: none;
+        .budget-snapshot__rail .budget-lede {
+            margin-bottom: 0;
+        }
+        .budget-snapshot__figures {
+            min-width: 0;
+        }
+        .budget-snapshot__tier {
+            display: inline-block;
+            margin: 0 0 0.85rem;
+            padding: 0.38rem 0.85rem;
+            border-radius: 999px;
+            font-size: 0.72rem;
             font-weight: 700;
-            color: #9aa8cc;
-            padding: 0.55rem 0.75rem;
-            background: rgba(36, 40, 62, 0.85);
-            border-bottom: 1px solid rgba(90, 85, 130, 0.35);
-        }
-        table.budget-table th:last-child,
-        table.budget-table td:last-child {
-            text-align: right;
-            font-variant-numeric: tabular-nums;
-        }
-        table.budget-table td {
-            padding: 0.5rem 0.75rem;
-            color: #c8d2ec;
-            border-bottom: 1px solid rgba(70, 65, 100, 0.25);
-        }
-        table.budget-table tbody tr:nth-child(even) td {
-            background: rgba(32, 36, 56, 0.35);
-        }
-        table.budget-table tbody tr:last-child td {
-            border-bottom: none;
-        }
-        table.budget-table td.budget-cat {
-            font-weight: 500;
-            color: #aeb9dd;
-        }
-        table.budget-table td.budget-amt {
-            font-weight: 600;
-            color: #f0ecff;
-        }
-        table.budget-table tfoot td {
-            padding: 0.65rem 0.75rem;
-            font-weight: 700;
-            background: linear-gradient(120deg, rgba(55, 48, 88, 0.55) 0%, rgba(38, 48, 78, 0.55) 100%);
-            border-top: 2px solid rgba(130, 110, 180, 0.35);
-            border-bottom: none;
-        }
-        table.budget-table tfoot td.budget-cat {
-            font-size: var(--somnia-fs-cap);
             letter-spacing: 0.1em;
             text-transform: uppercase;
-            color: #c4b8e8;
+            color: #e4e8fc;
+            background: linear-gradient(145deg, rgba(62, 58, 95, 0.75) 0%, rgba(42, 44, 72, 0.85) 100%);
+            border: 1px solid rgba(140, 125, 185, 0.42);
+            box-shadow: 0 4px 18px rgba(0, 0, 0, 0.2);
         }
-        table.budget-table tfoot td.budget-amt {
-            font-size: var(--somnia-fs-title);
-            color: #faf8ff;
+        .budget-head {
+            font-size: var(--somnia-fs-section);
+            letter-spacing: -0.02em;
+            text-transform: none;
+            color: #e2e6fb;
+            font-weight: 600;
+            margin: 0 0 0.45rem;
+        }
+        .budget-lede {
+            margin: 0 0 1.25rem;
+            font-size: 0.93rem;
+            font-weight: 400;
+            color: #a4b0d0;
+            line-height: 1.68;
+        }
+        .budget-stack {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 1.05rem;
+            margin: 0 0 0.15rem;
+        }
+        @media (min-width: 640px) {
+            .budget-stack {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 1.15rem 1.35rem;
+            }
+        }
+        .budget-line-card {
+            display: flex;
+            flex-direction: column;
+            align-items: stretch;
+            justify-content: space-between;
+            gap: 0.65rem;
+            min-height: 6.5rem;
+            padding: 1.15rem 1.2rem 1.2rem;
+            border-radius: 16px;
+            border: 1px solid rgba(100, 92, 138, 0.32);
+            border-left: 3px solid rgba(168, 148, 218, 0.55);
+            background: linear-gradient(
+                168deg,
+                rgba(44, 48, 76, 0.78) 0%,
+                rgba(26, 30, 50, 0.82) 100%
+            );
+            box-shadow:
+                0 10px 26px rgba(0, 0, 0, 0.2),
+                inset 0 1px 0 rgba(255, 255, 255, 0.06);
+        }
+        .budget-line-card__meta {
+            display: flex;
+            flex-direction: column;
+            gap: 0.28rem;
+            min-width: 0;
+        }
+        .budget-line-card__name {
+            font-size: 1.05rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+            color: #f0f2ff;
+            line-height: 1.2;
+        }
+        .budget-line-card__hint {
+            font-size: 0.78rem;
+            font-weight: 400;
+            line-height: 1.5;
+            color: #8493b0;
+        }
+        .budget-line-card__amt {
+            font-size: 1.28rem;
+            font-weight: 700;
+            font-variant-numeric: tabular-nums;
+            letter-spacing: -0.04em;
+            color: #ffffff;
+            line-height: 1.12;
+            margin-top: auto;
+            padding-top: 0.35rem;
+            border-top: 1px solid rgba(90, 88, 120, 0.35);
+        }
+        .budget-summary-card {
+            position: relative;
+            margin-top: 1.65rem;
+            padding: 1.75rem 1.65rem 1.85rem;
+            border-radius: 18px;
+            border: 1px solid rgba(200, 175, 255, 0.5);
+            background: linear-gradient(
+                155deg,
+                rgba(95, 78, 145, 0.72) 0%,
+                rgba(48, 50, 88, 0.94) 48%,
+                rgba(26, 30, 52, 0.98) 100%
+            );
+            box-shadow:
+                0 0 0 1px rgba(255, 255, 255, 0.06) inset,
+                0 22px 56px rgba(20, 12, 48, 0.55),
+                0 0 80px rgba(120, 90, 200, 0.18);
+        }
+        .budget-summary-card::before {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 1.25rem;
+            right: 1.25rem;
+            height: 4px;
+            border-radius: 0 0 6px 6px;
+            background: linear-gradient(90deg, rgba(255, 210, 150, 0.95), rgba(190, 160, 255, 0.9), rgba(120, 190, 255, 0.75));
+            opacity: 0.95;
+        }
+        .budget-summary-card__label {
+            margin: 0.35rem 0 0.5rem;
+            font-size: 0.74rem;
+            font-weight: 700;
+            letter-spacing: 0.2em;
+            text-transform: uppercase;
+            color: #dce2f8;
+        }
+        .budget-summary-card__value {
+            margin: 0;
+            font-size: clamp(2.15rem, 6.5vw, 3.35rem);
+            font-weight: 800;
+            letter-spacing: -0.05em;
+            font-variant-numeric: tabular-nums;
+            color: #ffffff;
+            line-height: 1.02;
+            text-shadow: 0 2px 28px rgba(40, 20, 80, 0.45);
+        }
+        .budget-summary-card__hint {
+            margin: 0.65rem 0 0;
+            font-size: 0.8rem;
+            font-weight: 400;
+            line-height: 1.55;
+            color: #b8c2de;
+            letter-spacing: 0.02em;
+        }
+        .budget-snapshot__note {
+            margin: 1.45rem 0 0;
+            padding: 1rem 1.1rem;
+            border-radius: 14px;
+            font-size: 0.82rem;
+            line-height: 1.62;
+            color: #9aa6c4;
+            background: rgba(18, 22, 40, 0.5);
+            border: 1px solid rgba(88, 82, 120, 0.32);
         }
         .budget-tips {
-            margin-top: 0.85rem;
-            padding: 0.65rem 0.75rem;
+            margin-top: 1.35rem;
+            padding: 1rem 1.1rem;
             border-radius: 14px;
             background: rgba(36, 40, 62, 0.45);
             border: 1px solid rgba(100, 90, 140, 0.25);
         }
         .budget-tips__title {
-            margin: 0 0 0.4rem;
+            margin: 0 0 0.5rem;
             font-size: var(--somnia-fs-cap);
             letter-spacing: 0.06em;
             text-transform: none;
@@ -1253,12 +1525,12 @@ def inject_styles() -> None:
         }
         .budget-tips ul {
             margin: 0;
-            padding-left: 1.05rem;
+            padding-left: 1.15rem;
             color: #aeb9dd;
             font-size: var(--somnia-fs-body);
-            line-height: 1.5;
+            line-height: 1.62;
         }
-        .budget-tips li { margin-bottom: 0.3rem; }
+        .budget-tips li { margin-bottom: 0.42rem; }
         .budget-tip-em { font-weight: 600; color: #ddd4f8; }
         ul.budget-bits {
             margin: 0;
@@ -1269,10 +1541,10 @@ def inject_styles() -> None:
         }
         ul.budget-bits li { margin-bottom: 0.25rem; }
         .budget-foot {
-            font-size: 0.75rem;
-            color: #7d8db0;
-            margin: 0.65rem 0 0;
-            line-height: 1.45;
+            font-size: 0.74rem;
+            color: #6f7d9a;
+            margin: 1.15rem 0 0;
+            line-height: 1.55;
         }
         .debug-section-head {
             font-size: var(--somnia-fs-section);
@@ -1341,6 +1613,64 @@ def _h(s: str) -> str:
     return html.escape(s, quote=True)
 
 
+def _prep_item_label(s: str) -> str:
+    #sentence case so checklists read clean even if an older plan blob skipped planner caps
+    t = str(s).strip()
+    if not t:
+        return t
+    return t[0].upper() + t[1:]
+
+
+def _parse_star_rating_number(raw: str) -> float | None:
+    t = re.sub(r"(?<=\d)s\b", "", str(raw).strip(), flags=re.I)
+    m = re.search(r"\d+(?:[.,]\d+)?", t.replace(",", "."))
+    if not m:
+        return None
+    try:
+        v = float(m.group(0).replace(",", "."))
+    except ValueError:
+        return None
+    if v < 0 or v > 7:
+        return None
+    return min(5.0, v)
+
+
+def _format_star_label(n: float) -> str:
+    if abs(n - round(n)) < 1e-6:
+        return str(int(round(n)))
+    return f"{n:.1f}".rstrip("0").rstrip(".")
+
+
+def _star_glyphs_five_scale(n: float) -> str:
+    k = int(round(min(5, max(0, n))))
+    return "\u2605" * k + "\u2606" * (5 - k)
+
+
+def _stars_fact_value_html(raw_val: str) -> str:
+    n = _parse_star_rating_number(raw_val)
+    if n is None:
+        cleaned = re.sub(r"(?<=\d)s\b", "", str(raw_val).strip(), flags=re.I)
+        return f'<span class="stay-card__fact-v">{_h(cleaned)}</span>'
+    label = _format_star_label(n)
+    glyphs = _star_glyphs_five_scale(n)
+    return (
+        '<span class="stay-card__fact-v stay-card__fact-v--stars">'
+        f'<span class="stay-card__stars-num">{_h(label)}</span>'
+        f'<span class="stay-card__stars-vis" aria-hidden="true">{glyphs}</span>'
+        "</span>"
+    )
+
+
+def _strip_urls_for_stay_display(text: str) -> str:
+    #drop raw urls from card copy so nothing linkifies beside the hotel name
+    if _blankish(text):
+        return ""
+    t = re.sub(r"https?://[^\s<>\"')\]]+", "", str(text), flags=re.I)
+    t = re.sub(r"www\.[^\s<>\"')\]]+", "", t, flags=re.I)
+    t = re.sub(r"\s+", " ", t).strip(" ·|-–")
+    return t
+
+
 def _ui_title(s: object, *, fallback: str) -> str:
     if _blankish(s):
         return fallback
@@ -1354,6 +1684,220 @@ def _ui_blurb(s: object) -> str:
     if _blankish(s):
         return ""
     return clean_description_for_display(str(s).strip(), soft_target=190, hard_max=280)
+
+
+def _stay_card_description_clean(raw: object) -> str:
+    #slightly longer clean pass before we split lead vs body for the card
+    if _blankish(raw):
+        return ""
+    t = polish_stay_description_for_display(str(raw).strip())
+    return _strip_urls_for_stay_display(
+        clean_description_for_display(t, soft_target=240, hard_max=340)
+    )
+
+
+def _stay_lead_and_body(text: str, *, lead_max: int = 118, body_max: int = 200) -> tuple[str, str]:
+    #first sentence (or first clause) reads as the scan line; rest is supporting detail
+    t = " ".join(text.split())
+    if not t:
+        return "", ""
+    best_i: int | None = None
+    for sep in (". ", "? ", "! "):
+        i = t.find(sep)
+        if i != -1 and i < 220 and (best_i is None or i < best_i):
+            best_i = i
+    if best_i is not None:
+        split_at = best_i
+        for sep in (". ", "? ", "! "):
+            if t.startswith(sep, best_i):
+                split_at = best_i + len(sep)
+                break
+        else:
+            split_at = best_i + 1
+        lead = t[:split_at].strip()
+        body = t[split_at:].strip()
+    else:
+        if "," in t[:140]:
+            i = t[:140].rfind(",")
+            lead = t[: i + 1].strip()
+            body = t[i + 1 :].strip()
+        elif len(t) <= lead_max:
+            return t, ""
+        else:
+            cut = t[:lead_max].rsplit(" ", 1)[0]
+            lead = cut + "…"
+            body = t[len(cut) :].strip()
+    if len(lead) > lead_max:
+        lead = lead[:lead_max].rsplit(" ", 1)[0] + "…"
+    if body and len(body) > body_max:
+        body = body[:body_max].rsplit(" ", 1)[0] + "…"
+    return lead, body
+
+
+def _stay_supporting_after_lead(lead: str, full: str) -> str:
+    #when the planner already picked a scan line, avoid repeating it as the whole body
+    lead = lead.strip()
+    full = full.strip()
+    if not full:
+        return ""
+    if not lead:
+        return full
+    if full.casefold() == lead.casefold():
+        return ""
+    if full.casefold().startswith(lead.casefold()):
+        return full[len(lead) :].strip(" .—-\t,:;")
+    for sep in (". ", "? ", "! "):
+        i = full.find(sep)
+        if i == -1:
+            continue
+        fs = full[: i + len(sep)].strip()
+        if fs.casefold().rstrip(".") == lead.casefold().rstrip("."):
+            return full[i + len(sep) :].strip()
+    return full
+
+
+_STAYS_EMPTY_PRIMARY = (
+    "No strong stay recommendations were found for this city yet. "
+    "Try another destination or regenerate after updating the hotel dataset."
+)
+
+_STAYS_STACK_FOOTER_FLEXIBLE = (
+    "Your trip budget is flexible, so different listing tiers can all show up."
+)
+
+
+def _strip_osm_head_for_display(text: str) -> str:
+    #drop legacy "hotel near … (OpenStreetMap…)" so facts start at Stars or Address
+    t = text.strip()
+    if not t:
+        return ""
+    low = t.casefold()
+    cut = min([i for i in (low.find("stars:"), low.find("address:")) if i != -1], default=-1)
+    if cut != -1:
+        return t[cut:].strip()
+    return re.sub(r"(?is)\([^)]*openstreetmap[^)]*\)\.?\s*", "", t).strip()
+
+
+def _stay_fact_segments(text: str) -> dict[str, str]:
+    #split on middle dot; ignore brand/operator for the card list
+    out: dict[str, str] = {}
+    for piece in re.split(r"\s*·\s*", text):
+        p = piece.strip().strip(".")
+        if ":" not in p:
+            continue
+        lk, rv = p.split(":", 1)
+        key = lk.strip().casefold()
+        if key in ("brand", "operator"):
+            continue
+        out[key] = rv.strip()
+    return out
+
+
+def _stay_facts_block_html(stay: dict) -> str:
+    #stars and address only; listing cost band is on the title row tag
+    merged = " ".join(
+        str(x).strip()
+        for x in (
+            stay.get("short_summary"),
+            stay.get("full_description"),
+            stay.get("description"),
+            stay.get("short_description"),
+            stay.get("note"),
+        )
+        if x and str(x).strip()
+    )
+    if not merged:
+        return '<p class="stay-card__lead stay-card__lead--muted">No extra details in our data for this listing yet.</p>'
+    polished = polish_stay_description_for_display(merged)
+    t = _strip_urls_for_stay_display(polished)
+    t = _strip_osm_head_for_display(t)
+    segs = _stay_fact_segments(t)
+    rows: list[tuple[str, str]] = []
+    if v := segs.get("stars"):
+        rows.append(("Stars", v))
+    if v := segs.get("address"):
+        rows.append(("Address", v))
+    if not rows:
+        fb = clean_description_for_display(merged, soft_target=110, hard_max=180)
+        fb = _strip_urls_for_stay_display(polish_stay_description_for_display(fb))
+        if fb.strip():
+            return (
+                '<ul class="stay-card__facts">'
+                '<li><span class="stay-card__fact-k">Details</span>'
+                f'<span class="stay-card__fact-v">{_h(fb.strip())}</span></li>'
+                "</ul>"
+            )
+        return '<p class="stay-card__lead stay-card__lead--muted">No extra details in our data for this listing yet.</p>'
+    lis = "".join(
+        (
+            f'<li><span class="stay-card__fact-k">{_h(lab)}</span>{_stars_fact_value_html(val)}</li>'
+            if lab == "Stars"
+            else f'<li><span class="stay-card__fact-k">{_h(lab)}</span>'
+            f'<span class="stay-card__fact-v">{_h(val)}</span></li>'
+        )
+        for lab, val in rows
+    )
+    return f'<ul class="stay-card__facts">{lis}</ul>'
+
+
+def _render_stays_tab(plan: dict) -> None:
+    #hotels tab: title + fact grid; one flexible-budget line under the whole stack
+    stays = plan.get("stays") or []
+    stay_note = plan.get("stay_suggestions_notice")
+    trip_b = plan.get("budget", "")
+
+    if stay_note and stays:
+        st.info(_h(str(stay_note)))
+
+    if not stays:
+        st.markdown(
+            '<div class="stay-empty" role="status">'
+            '<p class="stay-empty__title">Places to stay</p>'
+            f'<p class="stay-empty__lede">{_h(_STAYS_EMPTY_PRIMARY)}</p>'
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        if stay_note:
+            with st.expander("Why you might not see picks here", expanded=False):
+                st.caption(str(stay_note))
+        st.caption("Refreshing the trip or choosing another city sometimes surfaces new stays.")
+        return
+
+    stack_mod = " stay-stack--splurge-trip" if str(trip_b or "").strip().casefold() == "splurge" else ""
+    tb_cf = str(trip_b or "").strip().casefold()
+    stack_foot = ""
+    if tb_cf in ("not sure", "", "nan"):
+        stack_foot = f'<p class="stay-stack__foot-note">{_h(_STAYS_STACK_FOOTER_FLEXIBLE)}</p>'
+
+    cards: list[str] = []
+    for stay in stays:
+        title = _strip_urls_for_stay_display(_ui_title(stay.get("title"), fallback="Suggested stay"))
+        if not title:
+            title = "Suggested stay"
+        band_raw = stay.get("estimated_cost_band", "") or "unknown"
+        band = "unknown" if _blankish(band_raw) else str(band_raw).strip()
+        card_extra = " stay-card--splurge" if band.casefold() == "splurge" else ""
+        tag_txt = "Not tagged" if band.casefold() in ("unknown", "", "nan") else band.replace("_", " ").title()
+        tag_class = "stay-card__budget-tag"
+        if band.casefold() in ("unknown", "", "nan"):
+            tag_class += " stay-card__budget-tag--muted"
+        head_html = (
+            '<div class="stay-card__head">'
+            f'<h3 class="stay-card__title">{_h(title)}</h3>'
+            f'<span class="{tag_class}">{_h(tag_txt)}</span>'
+            "</div>"
+        )
+        facts_html = _stay_facts_block_html(stay)
+        cards.append(
+            f'<article class="stay-card{card_extra}">'
+            f"{head_html}"
+            f"{facts_html}"
+            "</article>"
+        )
+    st.markdown(
+        f'<div class="stay-tab-root"><div class="stay-stack{stack_mod}">{"".join(cards)}</div>{stack_foot}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 PREP_LOGISTICS_KEY = "trip_logistics"
@@ -1444,6 +1988,74 @@ _DEBUG_ROLE_LABELS = {
 }
 
 
+def _render_hotel_debug_block(plan: dict, dbg: dict) -> None:
+    #counts + source split + raw rows first so hotel issues are obvious before embed noise
+    st.markdown('<p class="debug-block-title">Hotels / stays (debug)</p>', unsafe_allow_html=True)
+    city = str(plan.get("destination") or "").strip() or "(unknown)"
+    st.caption(f"Stay counts use the trip destination name as stored in the plan: {city}")
+
+    hd = dbg.get("hotel_debug")
+    if not isinstance(hd, dict) or not hd:
+        st.warning(
+            "No hotel_debug in this snapshot — click Build my trip again with debug enabled after updating the planner."
+        )
+        st.markdown("**Top hotel rows (compact, after ranking only)**")
+        st.json(dbg.get("top_hotel_rows", []))
+        return
+
+    all_sec = int(hd.get("stay_rows_for_city_all_sections", 0) or 0)
+    sleep_raw = int(hd.get("stay_sleep_section_rows_raw", 0) or 0)
+    pre_rank = int(hd.get("lodging_pool_rows_pre_rank", 0) or 0)
+    k1, k2, k3 = st.columns(3)
+    with k1:
+        st.metric("Stay file rows (all sections)", all_sec)
+    with k2:
+        st.metric("Sleep rows in stay file", sleep_raw)
+    with k3:
+        st.metric("Lodging pool (pre-rank)", pre_rank)
+
+    src = {
+        "wikivoyage": int(hd.get("in_pool_wikivoyage", 0) or 0),
+        "openstreetmap": int(hd.get("in_pool_openstreetmap", 0) or 0),
+        "travel_guide_sleep": int(hd.get("in_pool_travel_guide_sleep", 0) or 0),
+    }
+    st.markdown("**Source breakdown (lodging pool, pre-rank)**")
+    st.json(src)
+
+    st.markdown("**Top raw hotel matches (pre-rank candidates)**")
+    st.caption("Titles, snippets, usable_for_stay, and source_bucket — compare with filter stages if cards look wrong.")
+    st.json(hd.get("hotel_candidates_pre_rank", []))
+
+    st.markdown("**Top hotel rows after ranking (compact)**")
+    st.json(dbg.get("top_hotel_rows", []))
+
+    flags = []
+    if hd.get("used_live_openstreetmap_fetch"):
+        flags.append("live OpenStreetMap fetch ran")
+    if hd.get("used_travel_guide_sleep_fallback"):
+        flags.append("travel guide Sleep fallback ran")
+    if flags:
+        st.caption(" · ".join(flags))
+
+    with st.expander("Pipeline detail (hints, filter gates, ranked scores, raw meta)", expanded=False):
+        hints = hd.get("hotel_debug_hints") or []
+        if isinstance(hints, list) and hints:
+            st.markdown("**Where to look next**")
+            for line in hints:
+                st.markdown(f"- {html.escape(str(line))}")
+        fs = hd.get("filter_stages")
+        if isinstance(fs, dict) and fs:
+            st.markdown("**Filter stages (same gates as stay cards)**")
+            st.json(fs)
+        st.metric("Stay cards returned", int(hd.get("stays_cards_returned", 0) or 0))
+        st.markdown("**Top rows after ranking (with scores when present)**")
+        st.json(hd.get("hotel_top_after_ranking", []))
+        meta = hd.get("stay_pipeline_meta")
+        if isinstance(meta, dict) and meta:
+            st.markdown("**Stay pipeline meta**")
+            st.json(meta)
+
+
 def _normalize_packing(raw: object) -> dict[str, list[str]]:
     #planner returns grouped dict; old session_state may still have a flat list
     if isinstance(raw, dict):
@@ -1501,7 +2113,7 @@ def _render_prep_and_packing_tab(plan: dict) -> None:
             shell = st.container()
         with shell:
             for i, item in enumerate(items):
-                st.checkbox(item, key=f"prep_cb_{fp}_{group_id}_{i}")
+                st.checkbox(_prep_item_label(item), key=f"prep_cb_{fp}_{group_id}_{i}")
     done = sum(
         1
         for gid, items in blocks
@@ -1677,45 +2289,77 @@ def _detailed_day_body_html(block: dict) -> str:
     )
 
 
+def _budget_display_bundle(plan: dict, bd: dict) -> tuple[dict[str, str], str, str]:
+    #older session plans may lack display bundle; rebuild ranges from tuples
+    raw_disp = bd.get("display")
+    if isinstance(raw_disp, dict):
+        disp = {k: str(v) for k, v in raw_disp.items() if isinstance(v, str)}
+    else:
+        disp = {}
+    for key, cat in (
+        ("lodging_estimate", "lodging"),
+        ("food_estimate", "food"),
+        ("transit_estimate", "transit"),
+        ("activities_estimate", "activities"),
+        ("total_estimate", "total"),
+    ):
+        if cat not in disp and key in bd:
+            lo, hi = bd[key]  # type: ignore[misc]
+            disp[cat] = format_usd_range(int(lo), int(hi))
+    tier = str(bd.get("budget_label") or "").strip()
+    if not tier:
+        bk = str(plan.get("budget") or "not sure").strip().lower()
+        tier = {
+            "budget": "Budget trip",
+            "mid": "Mid-range trip",
+            "splurge": "Splurge trip",
+            "not sure": "Flexible budget",
+        }.get(bk, "Flexible budget")
+    summary = str(bd.get("summary_sentence") or plan.get("budget_summary") or "").strip()
+    return disp, tier, summary
+
+
 def _budget_breakdown_card_html(plan: dict, bd: dict) -> str:
-    #mini table inside the card so numbers line up and scan like finance ui
+    #two-column snapshot on wide view: tier + summary rail, figures + total use the rest of the tab
+    disp, tier, summary = _budget_display_bundle(plan, bd)
     specs = (
-        ("Lodging", "lodging_estimate"),
-        ("Food", "food_estimate"),
-        ("Transit", "transit_estimate"),
-        ("Activities", "activities_estimate"),
+        ("Lodging", "lodging", "stays · whole trip"),
+        ("Food", "food", "meals and snacks · whole trip"),
+        ("Transit", "transit", "local transport · whole trip"),
+        ("Activities", "activities", "entries and fun · whole trip"),
     )
-    body_rows = []
-    for label, key in specs:
-        lo, hi = bd[key]
+    body_rows: list[str] = []
+    for name, dkey, hint in specs:
+        amt = disp.get(dkey, "—")
         body_rows.append(
-            "<tr>"
-            f'<td class="budget-cat">{_h(label)}</td>'
-            f'<td class="budget-amt">${lo:,}–${hi:,}</td>'
-            "</tr>"
+            '<article class="budget-line-card">'
+            '<div class="budget-line-card__meta">'
+            f'<span class="budget-line-card__name">{_h(name)}</span>'
+            f'<span class="budget-line-card__hint">{_h(hint)}</span>'
+            "</div>"
+            f'<span class="budget-line-card__amt">{_h(amt)}</span>'
+            "</article>"
         )
-    tlo, thi = bd["total_estimate"]
+    total_s = disp.get("total", "—")
     days = max(1, int(plan.get("num_days") or 1))
     tips = (
         "<div class='budget-tips'>"
-        "<p class='budget-tips__title'>How to use these numbers</p>"
+        "<p class='budget-tips__title'>How to read this</p>"
         "<ul>"
-        "<li><span class='budget-tip-em'>Lodging ÷ nights</span> ≈ a nightly hotel filter to stay inside this trip shape.</li>"
-        "<li><span class='budget-tip-em'>Food ÷ days</span> ≈ a loose daily meals + snacks ceiling (coffee counts).</li>"
-        "<li><span class='budget-tip-em'>Transit + activities</span> are usually the first place to rebalance if one category runs hot.</li>"
-        f"<li><span class='budget-tip-em'>Total</span> sums the four rows. Use it to sanity-check major bookings against ${tlo:,}–${thi:,} before you lock dates.</li>"
+        "<li><span class='budget-tip-em'>Lodging ÷ nights</span> ≈ a nightly filter that fits this trip shape.</li>"
+        "<li><span class='budget-tip-em'>Food ÷ days</span> ≈ a soft daily meals + snacks ceiling.</li>"
+        "<li><span class='budget-tip-em'>Transit + activities</span> flex first when one category runs hot.</li>"
+        f"<li><span class='budget-tip-em'>Total</span> sums the four bands above — sanity-check big bookings against {_h(total_s)}.</li>"
         "</ul></div>"
     )
-    summary = _h(str(plan.get("budget_summary", "")))
-    table = (
-        '<div class="budget-table-wrap">'
-        '<table class="budget-table">'
-        "<thead><tr><th>Category</th><th>Trip estimate (USD)</th></tr></thead>"
-        f"<tbody>{''.join(body_rows)}</tbody>"
-        "<tfoot><tr>"
-        '<td class="budget-cat">Total</td>'
-        f'<td class="budget-amt">${tlo:,}–${thi:,}</td>'
-        "</tr></tfoot></table></div>"
+    summary_h = _h(summary) if summary else ""
+    lede = f'<p class="budget-lede">{summary_h}</p>' if summary_h else ""
+    tier_html = f'<p class="budget-snapshot__tier">{_h(tier)}</p>' if tier else ""
+    rough_note = (
+        "<p class='budget-snapshot__note'>"
+        "Rough estimate only — not a quote. Real spend shifts with how you book, "
+        "seasonality, and what you add at the last minute."
+        "</p>"
     )
     foot = (
         "<p class='budget-foot'>"
@@ -1724,18 +2368,54 @@ def _budget_breakdown_card_html(plan: dict, bd: dict) -> str:
         f"Shown for {days} {'days' if days != 1 else 'day'}"
         "</p>"
     )
+    breakdown = (
+        '<div class="budget-snapshot__figures">'
+        '<div class="budget-stack" role="group" aria-label="Budget by category">'
+        f'{"".join(body_rows)}'
+        "</div>"
+        '<div class="budget-summary-card" role="region" aria-label="Estimated total trip cost">'
+        '<p class="budget-summary-card__label">Estimated total</p>'
+        f'<p class="budget-summary-card__value">{_h(total_s)}</p>'
+        '<p class="budget-summary-card__hint">USD · lodging + food + transit + activities (whole trip)</p>'
+        "</div>"
+        f"{rough_note}{tips}{foot}"
+        "</div>"
+    )
+    rail = (
+        '<div class="budget-snapshot__rail">'
+        f"{tier_html}"
+        f"{lede}"
+        "</div>"
+    )
     return (
+        '<div class="budget-snapshot">'
         '<div class="budget-card budget-card--breakdown">'
-        '<div class="budget-head">Estimates by category</div>'
-        f'<p class="budget-lede">{summary}</p>'
-        f"{table}{tips}{foot}</div>"
+        '<h2 class="budget-snapshot__title">Budget snapshot</h2>'
+        '<div class="budget-snapshot__layout">'
+        f"{rail}{breakdown}"
+        "</div></div></div>"
     )
 
 
 def somnia_landing() -> None:
-    #full-viewport hero + in-page anchor to trip form (same url, no new tab)
+    #font-face lives in this block with the hero so the face loads next to the h1 (streamlit markdown quirk)
+    _ff = _cloudy_sunday_font_face_css()
+    _hero_title = """
+        section.main [data-testid="stMarkdownContainer"] .somnia-hero h1.somnia-title,
+        .somnia-hero h1.somnia-title {
+            font-family: "CloudySunday", "Fraunces", Georgia, serif !important;
+            font-size: clamp(5.25rem, 22vw, 13rem) !important;
+            font-weight: 400 !important;
+            letter-spacing: -0.02em !important;
+            line-height: 1.02 !important;
+            color: #f2efff !important;
+            text-shadow: 0 4px 44px rgba(80, 60, 140, 0.5) !important;
+        }
+    """
+    _style = f"<style>{_ff}{_hero_title}</style>" if _ff else f"<style>{_hero_title}</style>"
     st.markdown(
-        """
+        _style
+        + """
         <div class="somnia-hero">
             <div class="somnia-cloud somnia-cloud--1"></div>
             <div class="somnia-cloud somnia-cloud--2"></div>
@@ -1758,7 +2438,8 @@ def _render_debug_section(plan: dict) -> None:
     st.divider()
     st.markdown('<p class="debug-section-head">Debug info</p>', unsafe_allow_html=True)
     st.caption(
-        "Compare ranking queries with the top rows to see how the embedder ordered results. Rebuild after toggling this option to refresh snapshots."
+        "Hotel block is first when snapshots exist, then embed queries and itinerary pools. "
+        "Rebuild the trip after toggling this option to refresh."
     )
 
     sup = plan.get("supported_destinations") or []
@@ -1771,6 +2452,8 @@ def _render_debug_section(plan: dict) -> None:
             'Turn on this checkbox, then click "Build my trip", to attach ranking snapshots from the planner.'
         )
         return
+
+    _render_hotel_debug_block(plan, dbg)
 
     st.markdown('<p class="debug-block-title">Ranking queries (embed input per slice)</p>', unsafe_allow_html=True)
     rq = dbg.get("ranking_queries") or {}
@@ -1797,9 +2480,6 @@ def _render_debug_section(plan: dict) -> None:
     with c3:
         st.markdown("**Drink**")
         st.json(dbg.get("top_drink", []))
-
-    st.markdown('<p class="debug-block-title">Top raw hotel matches (sleep pool)</p>', unsafe_allow_html=True)
-    st.json(dbg.get("top_hotel_rows", []))
 
     n = dbg.get("scoped_row_count")
     if n is not None:
@@ -1864,39 +2544,10 @@ def render_plan(plan: dict) -> None:
                 st.markdown(block_html, unsafe_allow_html=True)
 
     with tab3:
-        stay_note = plan.get("stay_suggestions_notice")
-        if stay_note:
-            st.info(str(stay_note))
-        if not plan.get("stays"):
-            if not stay_note:
-                st.caption("No sleep rows passed the stay filter for this city yet.")
-        else:
-            cards: list[str] = []
-            for stay in plan["stays"]:
-                title = _ui_title(stay.get("title"), fallback="Suggested stay")
-                desc = _ui_blurb(stay.get("description", stay.get("note", "")))
-                why_raw = stay.get("match_reason", "")
-                why = _ui_blurb(why_raw) if not _blankish(why_raw) else ""
-                band_raw = stay.get("estimated_cost_band", "") or "unknown"
-                band = "unknown" if _blankish(band_raw) else str(band_raw).strip()
-                band_label = "Unknown" if band.casefold() == "unknown" else band.replace("_", " ").title()
-                desc_block = f'<p class="stay-card__desc">{_h(desc)}</p>' if desc else ""
-                why_block = f'<p class="stay-card__why">{_h(why)}</p>' if why else ""
-                cards.append(
-                    f'<article class="stay-card">'
-                    f'<div class="stay-card__head">'
-                    f'<span class="stay-card__kicker">Hotel</span>'
-                    f'<span class="stay-band-pill">{_h(band_label)}</span></div>'
-                    f'<h3 class="stay-card__title">{_h(title)}</h3>{desc_block}{why_block}'
-                    f"</article>"
-                )
-            st.markdown(f'<div class="stay-stack">{"".join(cards)}</div>', unsafe_allow_html=True)
+        _render_stays_tab(plan)
 
     with tab4:
-        st.markdown('<p class="budget-page-head">Trip budget</p>', unsafe_allow_html=True)
-        st.caption(
-            "USD ranges cover the whole trip. Use the table to sanity-check filters before you book; it is not a quote."
-        )
+        st.caption("Whole-trip USD bands from the planner model — use as a sanity check, not a quote.")
         bd = plan.get("budget_breakdown")
         req = (
             "lodging_estimate",
@@ -1914,11 +2565,14 @@ def render_plan(plan: dict) -> None:
             )
             st.markdown(
                 f"""
+                <div class="budget-snapshot">
                 <div class="budget-card">
+                    <h2 class="budget-snapshot__title">Budget snapshot</h2>
                     <div class="budget-head">Rough estimate</div>
                     <p class="budget-lede">{summary}</p>
                     <ul class="budget-bits">{bits}</ul>
                     <p class="budget-foot">Rebuild the trip to see the category breakdown.</p>
+                </div>
                 </div>
                 """,
                 unsafe_allow_html=True,

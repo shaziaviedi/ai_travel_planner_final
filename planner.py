@@ -4,6 +4,7 @@ turn form inputs + scraped rows into a lightweight trip bundle for the ui.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from model_utils import embed_texts
 
 ROOT = Path(__file__).resolve().parent
 DATASET = ROOT / "data" / "processed" / "travel_dataset.csv"
+STAY_DATASET = ROOT / "data" / "processed" / "stay_dataset.csv"
 
 #usd/day low/high per category at city multiplier 1.0; sums land in sensible trip bands per tier
 _BUDGET_CATEGORY_DAILY_USD: dict[str, dict[str, tuple[int, int]]] = {
@@ -88,6 +90,11 @@ CITY_COST_MULTIPLIERS: dict[str, float] = {
 
 NO_CITY_MSG = (
     "No destination data found for {dest} yet. Try one of the currently supported cities."
+)
+
+NO_LODGING_ANY_SOURCE_MSG = (
+    "No lodging listings for {dest} in our stay file, live OpenStreetMap lookup, or guide backup yet. "
+    "Try another supported city, or run build_dataset.py after refreshing sources."
 )
 
 #strip these from descriptions so cards read less like raw wiki maintenance
@@ -211,6 +218,70 @@ SLEEP_MID_LEXICON: tuple[str, ...] = (
     "4 star",
     "standard",
     "pleasant",
+    "contemporary",
+    "stylish",
+)
+
+#extra sleep-only cues for rule-based ranking by trip budget (title+description+osm tag hints)
+SLEEP_RANK_SPLURGE_TERMS: tuple[str, ...] = (
+    "luxury",
+    "five-star",
+    "five star",
+    "5-star",
+    "5 star",
+    "premium",
+    "upscale",
+    "elegant",
+    "suites",
+    "suite",
+    "resort",
+    "boutique",
+    "concierge",
+    "penthouse",
+    "lavish",
+    "opulent",
+    "michelin",
+    "palace",
+    "grand hotel",
+    "designer",
+)
+SLEEP_RANK_BUDGET_TERMS: tuple[str, ...] = (
+    "hostel",
+    "affordable",
+    "simple",
+    "practical",
+    "budget-friendly",
+    "budget friendly",
+    "backpacker",
+    "dorm",
+    "dormitory",
+    "capsule",
+    "guesthouse",
+    "guest house",
+    "economical",
+    "inexpensive",
+    "value",
+    "no-frills",
+    "no frills",
+    "cheap",
+    "motel",
+    "shared bath",
+)
+SLEEP_RANK_MID_TERMS: tuple[str, ...] = (
+    "mid-range",
+    "mid range",
+    "balanced",
+    "moderate",
+    "comfortable",
+    "business hotel",
+    "three-star",
+    "3-star",
+    "four-star",
+    "4-star",
+    "4 star",
+    "everyday",
+    "reliable",
+    "standard",
     "contemporary",
     "stylish",
 )
@@ -362,13 +433,24 @@ def _load_dataset() -> pd.DataFrame:
     return pd.read_csv(DATASET)
 
 
+def _load_stay_dataset() -> pd.DataFrame:
+    if not STAY_DATASET.is_file():
+        return pd.DataFrame()
+    return pd.read_csv(STAY_DATASET)
+
+
 def supported_destinations(df: pd.DataFrame | None = None) -> list[str]:
-    #single place to read which cities the csv actually contains
-    if df is None:
-        df = _load_dataset()
-    if df.empty or "destination" not in df.columns:
+    #union of travel rows and stay rows so a city with only osm stays still lists
+    travel = df if df is not None else _load_dataset()
+    stay = _load_stay_dataset()
+    parts: list[pd.Series] = []
+    if not travel.empty and "destination" in travel.columns:
+        parts.append(travel["destination"].astype(str).str.strip())
+    if not stay.empty and "destination" in stay.columns:
+        parts.append(stay["destination"].astype(str).str.strip())
+    if not parts:
         return []
-    names = df["destination"].astype(str).str.strip()
+    names = pd.concat(parts, ignore_index=True)
     names = names[names.str.len() > 0]
     return sorted(names.unique().tolist(), key=str.casefold)
 
@@ -383,6 +465,17 @@ def strict_rows_for_destination(df: pd.DataFrame, destination: str) -> pd.DataFr
     key = destination.strip().casefold()
     mask = df["destination"].astype(str).str.strip().str.casefold() == key
     return df.loc[mask].reset_index(drop=True)
+
+
+def _enforce_stay_destination(df: pd.DataFrame, display_dest: str) -> pd.DataFrame:
+    #last-line guard so live osm or odd csv rows never leak another city into the sleep pool
+    if df.empty or not str(display_dest).strip():
+        return df
+    if "destination" not in df.columns:
+        return df
+    key = str(display_dest).strip().casefold()
+    m = df["destination"].astype(str).str.strip().str.casefold() == key
+    return df.loc[m].reset_index(drop=True)
 
 
 def _canonical_destination_name(scoped: pd.DataFrame) -> str:
@@ -491,6 +584,92 @@ def _intent_tokens(vibe: str, interests: str) -> list[str]:
         if len(t) >= 4 and t not in out:
             out.append(t)
     return out[:24]
+
+
+def _parse_osm_tags_dict(raw: object) -> dict[str, object]:
+    if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+        return {}
+    s = str(raw).strip()
+    if not s or s.casefold() == "nan":
+        return {}
+    try:
+        obj = json.loads(s)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return {}
+    return obj if isinstance(obj, dict) else {}
+
+
+def _osm_stars_numeric(stars_raw: object) -> float | None:
+    if stars_raw is None or (isinstance(stars_raw, float) and pd.isna(stars_raw)):
+        return None
+    s = str(stars_raw).strip()
+    if not s:
+        return None
+    m = re.search(r"(\d+(?:[.,]\d+)?)", s.replace(",", "."))
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except ValueError:
+        return None
+
+
+def _band_from_star_value(v: float) -> str:
+    if v >= 4.0:
+        return "splurge"
+    if v <= 2.0:
+        return "budget"
+    return "mid"
+
+
+def _osm_star_band_from_row(row: pd.Series) -> str:
+    tags = _parse_osm_tags_dict(row.get("osm_tags"))
+    if not tags:
+        return "unknown"
+    v = _osm_stars_numeric(tags.get("stars"))
+    if v is None:
+        return "unknown"
+    return _band_from_star_value(v)
+
+
+def _osm_tags_budget_hints(row: pd.Series) -> str:
+    #turn a few osm tag keys into plain words for keyword rank + mini lm blob
+    tags = _parse_osm_tags_dict(row.get("osm_tags"))
+    if not tags:
+        return ""
+    bits: list[str] = []
+    tour = str(tags.get("tourism") or "").replace("_", " ").strip().lower()
+    if tour:
+        bits.append(tour)
+    v = _osm_stars_numeric(tags.get("stars"))
+    if v is not None:
+        bits.append(f"stars {tags.get('stars')}")
+        bb = _band_from_star_value(v)
+        if bb == "splurge":
+            bits.extend(["five star", "luxury", "premium", "upscale", "elegant"])
+        elif bb == "budget":
+            bits.extend(["two star", "affordable", "simple", "practical", "budget"])
+        else:
+            bits.extend(["mid-range", "moderate", "comfortable", "three star", "four star"])
+    return " ".join(bits)
+
+
+def _sleep_row_rank_text(row: pd.Series) -> str:
+    t = _row_text(row, "title").lower()
+    d = _row_text(row, "description").lower()
+    band = str(row.get("estimated_cost_band", "") or "").lower()
+    hint = _osm_tags_budget_hints(row).lower()
+    return f"{t} {d} {band} {hint}".strip()
+
+
+def _sleep_cos_weight(budget: str) -> float:
+    #sleep gets more keyword weight so budget rules and osm stars can reorder results
+    bk = _normalized_budget_key(budget)
+    if bk in ("splurge", "budget"):
+        return 0.42
+    if bk == "mid":
+        return 0.46
+    return 0.52
 
 
 def _sleep_query_extra(budget_key: str, vibe: str, interests: str) -> str:
@@ -619,6 +798,112 @@ def _debug_top_rows(pool: pd.DataFrame, k: int = _DEBUG_TOP_K) -> list[dict[str,
     return [_debug_row_snap(row) for _, row in pool.head(k).iterrows()]
 
 
+def _debug_hotel_candidate_snap(row: pd.Series) -> dict[str, object]:
+    #hotel tab: enough fields to see scrape quality vs map pins before ranking
+    base = _debug_row_snap(row)
+    base["source_bucket"] = _stay_row_source_bucket(row)
+    base["source"] = _row_text(row, "source") or "-"
+    base["data_source"] = str(row.get("data_source", "") or "").strip() or "-"
+    if "usable_for_stay" in row.index:
+        base["usable_for_stay"] = int(pd.to_numeric(row.get("usable_for_stay"), errors="coerce") or 0)
+    else:
+        base["usable_for_stay"] = None
+    band = _row_text(row, "estimated_cost_band")
+    base["estimated_cost_band"] = band if band else "-"
+    return base
+
+
+def _debug_hotel_candidates_pre_rank(pool: pd.DataFrame, k: int = _DEBUG_TOP_K) -> list[dict[str, object]]:
+    if pool.empty:
+        return []
+    return [_debug_hotel_candidate_snap(row) for _, row in pool.head(k).iterrows()]
+
+
+def _debug_hotel_rows_after_ranking(pool: pd.DataFrame, k: int = _DEBUG_TOP_K) -> list[dict[str, object]]:
+    if pool.empty:
+        return []
+    out: list[dict[str, object]] = []
+    for _, row in pool.head(k).iterrows():
+        d = _debug_hotel_candidate_snap(row)
+        if "_sr_cos" in row.index and not (isinstance(row.get("_sr_cos"), float) and pd.isna(row.get("_sr_cos"))):
+            d["rank_cos"] = float(row["_sr_cos"])
+        if "_sr_boost" in row.index and not (isinstance(row.get("_sr_boost"), float) and pd.isna(row.get("_sr_boost"))):
+            d["rank_keyword_boost"] = float(row["_sr_boost"])
+        if "_sr_comb" in row.index and not (isinstance(row.get("_sr_comb"), float) and pd.isna(row.get("_sr_comb"))):
+            d["rank_combined"] = float(row["_sr_comb"])
+        out.append(d)
+    return out
+
+
+def _hotel_filter_stage_counts(sleep_ranked: pd.DataFrame, budget_key: str) -> dict[str, int]:
+    #mirrors _build_stays masks so you can tell filtering from ranking from empty pool
+    if sleep_ranked.empty:
+        return {
+            "ranked_pool_rows": 0,
+            "after_lodging_shape_filter": 0,
+            "after_trip_tier_gate": 0,
+            "after_both_filters": 0,
+        }
+    bk = _normalized_budget_key(budget_key)
+    m_lodge = sleep_ranked.apply(_row_sounds_like_lodging, axis=1)
+    m_tier = sleep_ranked.apply(lambda r: _stay_passes_tier_gate(r, bk), axis=1)
+    both = m_lodge & m_tier
+    return {
+        "ranked_pool_rows": int(len(sleep_ranked)),
+        "after_lodging_shape_filter": int(m_lodge.sum()),
+        "after_trip_tier_gate": int(m_tier.sum()),
+        "after_both_filters": int(both.sum()),
+    }
+
+
+def _hotel_debug_hint_lines(
+    pool_meta: dict[str, object],
+    pool_df: pd.DataFrame,
+    sleep_ranked: pd.DataFrame,
+    stays: list,
+    src_counts: dict[str, int],
+    filter_counts: dict[str, int],
+) -> list[str]:
+    #short guesses for whether to look at data, scrape, filters, or rank
+    hints: list[str] = []
+    n_city = int(pool_meta.get("stay_rows_for_city_all_sections", 0) or 0)
+    n_sleep_raw = int(pool_meta.get("stay_sleep_section_rows_raw", 0) or 0)
+    n_csv_merge = int(pool_meta.get("stay_csv_merged_pool_rows", 0) or 0)
+    n_pool = int(pool_meta.get("lodging_pool_rows_final", 0) or 0)
+    n_ranked = int(filter_counts.get("ranked_pool_rows", 0) or 0)
+    n_pass = int(filter_counts.get("after_both_filters", 0) or 0)
+
+    if n_city == 0 and n_pool == 0:
+        hints.append("likely missing data: stay_dataset has no rows for this exact destination string.")
+    elif n_sleep_raw == 0 and n_pool == 0:
+        hints.append("no Sleep rows for this city in the stay file — naming or section slice mismatch.")
+    elif n_sleep_raw > 0 and n_csv_merge == 0 and n_pool == 0:
+        hints.append("sleep rows exist but usable wiki + osm merge is empty before live fetch — gates may be strict or scrape is weak.")
+    elif n_sleep_raw > 0 and n_csv_merge == 0 and n_pool > 0 and pool_meta.get("used_live_openstreetmap_fetch"):
+        hints.append("csv merge empty; live OpenStreetMap filled the pool — rebuild stay_dataset to cache pins.")
+
+    if pool_meta.get("used_travel_guide_sleep_fallback"):
+        hints.append("travel guide Sleep fallback used — stay file + live osm had nothing usable.")
+
+    if n_ranked > 0 and n_pass == 0:
+        hints.append("ranked pool has rows but lodging + trip tier filters removed all — focus on filter rules for this budget.")
+    elif n_pass > 0 and len(stays) == 0:
+        hints.append("rows passed filters but no stay cards returned — title/description may be empty after trim.")
+    elif n_pass > 0 and len(stays) > 0:
+        hints.append("filters left candidates; ranking + formatting produced visible stays.")
+
+    if src_counts.get("wikivoyage", 0) == 0 and src_counts.get("openstreetmap", 0) > 0 and n_pool > 0:
+        hints.append("final pool is map-only (no wikivoyage rows) — wiki sleep may be unusable or absent in the file.")
+
+    seen: set[str] = set()
+    out: list[str] = []
+    for h in hints:
+        if h not in seen:
+            seen.add(h)
+            out.append(h)
+    return out
+
+
 def _ranking_queries(
     display_dest: str,
     vibe: str,
@@ -654,10 +939,13 @@ def _keyword_boost(
     interests: str,
 ) -> float:
     #cheap nudge on top of cosine so price cues move the list without trashing unrelated rows
-    text = f"{_row_text(row, 'title')} {_row_text(row, 'description')}".lower()
+    bk = _normalized_budget_key(budget)
+    if section_role == "sleep":
+        text = _sleep_row_rank_text(row)
+    else:
+        text = f"{_row_text(row, 'title')} {_row_text(row, 'description')}".lower()
     intent = _intent_blob(vibe, budget, interests)
     boost = 0.0
-    bk = _normalized_budget_key(budget)
     band = ""
     if "estimated_cost_band" in row.index:
         band = str(row.get("estimated_cost_band", "") or "").lower()
@@ -667,7 +955,7 @@ def _keyword_boost(
         if section_role == "eat":
             boost += 0.05 * min(3, sum(1 for w in ("omakase", "michelin", "sommelier", "tasting", "degustation") if w in text))
 
-    if band:
+    if band and section_role != "sleep":
         if bk == "splurge" and band == "splurge":
             boost += 0.18
         if bk == "budget" and band == "budget":
@@ -726,29 +1014,60 @@ def _keyword_boost(
             boost += 0.042 * min(3, sum(1 for w in ("cocktail", "wine", "whisky", "rooftop", "lounge", "champagne") if w in text))
 
     if section_role == "sleep":
+        osm_band = _osm_star_band_from_row(row)
+        rs = _lexicon_hit_count(text, SLEEP_RANK_SPLURGE_TERMS)
+        rb = _lexicon_hit_count(text, SLEEP_RANK_BUDGET_TERMS)
+        rm = _lexicon_hit_count(text, SLEEP_RANK_MID_TERMS)
         ns = _lexicon_hit_count(text, SLEEP_SPLURGE_LEXICON)
         nb = _lexicon_hit_count(text, SLEEP_BUDGET_LEXICON)
         nm = _lexicon_hit_count(text, SLEEP_MID_LEXICON)
-        lux_stay_hits = sum(1 for w in LUXURY_STAY if w in text)
-        if bk == "splurge":
-            boost += 0.095 * min(9, ns)
-            boost += 0.058 * min(6, lux_stay_hits)
-            boost += 0.036 * min(4, nm)
-            if "hostel" in text and ns == 0 and lux_stay_hits == 0 and band != "splurge":
-                boost -= 0.12
-        elif bk == "budget":
-            boost += 0.098 * min(9, nb)
-            boost += 0.068 * min(5, sum(1 for w in ("hostel", "capsule", "dorm", "motel") if w in text))
-            if band == "splurge" and "hostel" not in text and "capsule" not in text:
+        lux_hit = sum(1 for w in LUXURY_STAY if w in text)
+        splurge_shape = rs + lux_hit + ns
+        budget_shape = rb + nb + sum(1 for w in ("hostel", "capsule", "dorm", "motel") if w in text)
+        if band:
+            if bk == "splurge" and band == "splurge":
+                boost += 0.26
+            elif bk == "budget" and band == "budget":
+                boost += 0.24
+            elif bk == "mid" and band == "mid":
+                boost += 0.18
+            elif bk == "splurge" and band == "budget":
                 boost -= 0.1
+            elif bk == "budget" and band == "splurge":
+                boost -= 0.14
+            elif bk == "mid" and band in ("splurge", "budget"):
+                boost += 0.05
+        if osm_band != "unknown":
+            if bk == osm_band:
+                boost += 0.16
+            elif bk == "splurge" and osm_band == "budget":
+                boost -= 0.12
+            elif bk == "budget" and osm_band == "splurge":
+                boost -= 0.14
+            elif bk == "mid" and osm_band in ("splurge", "budget"):
+                boost += 0.04
+        if bk == "splurge":
+            boost += 0.13 * min(10, splurge_shape)
+            boost += 0.07 * min(5, rm)
+            if budget_shape >= 2 and splurge_shape < 2:
+                boost -= 0.2
+            elif "hostel" in text and lux_hit == 0 and band != "splurge" and rs < 2:
+                boost -= 0.16
+        elif bk == "budget":
+            boost += 0.15 * min(12, budget_shape + rb)
+            boost += 0.09 * min(6, nb)
+            if splurge_shape >= 3 and band != "budget":
+                boost -= 0.14
         elif bk == "mid":
-            boost += 0.074 * min(7, nm)
-            boost += 0.038 * min(4, nb)
-            boost += 0.034 * min(4, ns)
+            boost += 0.12 * min(10, rm + nm)
+            boost += 0.06 * min(5, rb)
+            boost += 0.05 * min(5, rs)
+            if "hostel" in text and "hotel" not in text and "boutique" not in text and "resort" not in text:
+                boost -= 0.07
         else:
-            boost += 0.03 * min(6, ns + nm + nb)
+            boost += 0.04 * min(10, ns + nm + nb + rs + rb)
         vhits_s = sum(1 for tok in _intent_tokens(vibe, interests) if tok in text)
-        boost += 0.025 * min(7, vhits_s)
+        boost += 0.028 * min(7, vhits_s)
 
     return float(max(0.0, min(1.0, boost)))
 
@@ -774,7 +1093,11 @@ def _intent_rank(
     texts: list[str] = []
     for _, row in df.iterrows():
         band = _clean_scalar(row.get("estimated_cost_band", "")) if "estimated_cost_band" in row.index else ""
-        blob = f"{row.get('section', '')} {_row_text(row, 'title')} {_row_text(row, 'description')} {band}"
+        if section_role == "sleep":
+            hint = _osm_tags_budget_hints(row).lower()[:240]
+            blob = f"{row.get('section', '')} {_row_text(row, 'title')} {_row_text(row, 'description')} {band} {hint}"
+        else:
+            blob = f"{row.get('section', '')} {_row_text(row, 'title')} {_row_text(row, 'description')} {band}"
         texts.append(str(blob)[:900])
 
     q = embed_texts([q_text])
@@ -822,26 +1145,176 @@ def _itinerary_pool(
     )
 
 
+def _sleep_rows_filtered(scoped: pd.DataFrame) -> pd.DataFrame:
+    #wikivoyage sleep slice the dataset already marked as stay-usable
+    pool = scoped[scoped["section"] == "Sleep"].copy()
+    if "usable_for_stay" in pool.columns:
+        good = pool[pool["usable_for_stay"] == 1]
+        if not good.empty:
+            pool = good
+    return pool
+
+
+def _sleep_section_only(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty or "section" not in df.columns:
+        return pd.DataFrame()
+    return df[df["section"].astype(str).str.strip() == "Sleep"].copy()
+
+
+def _usable_stay_eq1(s: pd.Series) -> pd.Series:
+    return pd.to_numeric(s, errors="coerce").fillna(0).astype(int) == 1
+
+
+def _subset_usable_else_empty(df: pd.DataFrame) -> pd.DataFrame:
+    #wikivoyage: only rows flagged usable; never silently widen to weak prose sleep
+    if df.empty:
+        return df
+    if "usable_for_stay" not in df.columns:
+        return df.iloc[0:0].copy()
+    good = df.loc[_usable_stay_eq1(df["usable_for_stay"])].copy()
+    return good
+
+
+def _subset_usable_else_all(df: pd.DataFrame) -> pd.DataFrame:
+    #openstreetmap backup: prefer usable=1, else keep the pin rows so the tab is not blank
+    if df.empty:
+        return df
+    if "usable_for_stay" not in df.columns:
+        return df
+    good = df.loc[_usable_stay_eq1(df["usable_for_stay"])].copy()
+    return good if not good.empty else df.copy()
+
+
+def _split_wiki_vs_osm_stays(sleep_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if sleep_df.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    src = sleep_df.get("source", pd.Series("", index=sleep_df.index)).fillna("").astype(str).str.strip().str.casefold()
+    ds = sleep_df.get("data_source", pd.Series("", index=sleep_df.index)).fillna("").astype(str).str.strip().str.casefold()
+    is_osm = (src == "openstreetmap") | (src == "osm") | (ds == "osm")
+    is_wiki = (src == "wikivoyage") | (~is_osm & (src == "") & (ds != "osm"))
+    return sleep_df.loc[is_wiki].copy(), sleep_df.loc[is_osm].copy()
+
+
+def _stay_row_source_bucket(row: pd.Series) -> str:
+    #wikivoyage vs map pins vs legacy travel sleep rows (blank source)
+    s = _row_text(row, "source").casefold()
+    ds = str(row.get("data_source", "") or "").strip().casefold()
+    if ds == "osm" or s in ("openstreetmap", "osm"):
+        return "openstreetmap"
+    if s == "wikivoyage":
+        return "wikivoyage"
+    return "travel_guide"
+
+
+def _count_stay_pool_sources(pool: pd.DataFrame) -> dict[str, int]:
+    c = {"wikivoyage": 0, "openstreetmap": 0, "travel_guide": 0}
+    if pool.empty:
+        return c
+    for _, row in pool.iterrows():
+        k = _stay_row_source_bucket(row)
+        c[k] = c.get(k, 0) + 1
+    return c
+
+
+def _dedupe_stays_prefer_wiki(a: pd.DataFrame, b: pd.DataFrame) -> pd.DataFrame:
+    parts = [p for p in (a, b) if p is not None and not p.empty]
+    if not parts:
+        return pd.DataFrame()
+    out = pd.concat(parts, ignore_index=True)
+    src_cf = out.get("source", pd.Series("", index=out.index)).astype(str).str.strip().str.casefold()
+    out = out.copy()
+    out["_sr_rank"] = src_cf.map(lambda x: 0 if x == "wikivoyage" else 1).astype(int)
+    out["_sr_tkey"] = out["title"].astype(str).str.strip().str.casefold()
+    out = out.sort_values(["_sr_tkey", "_sr_rank"], kind="mergesort")
+    out = out.drop_duplicates(subset=["_sr_tkey"], keep="first").drop(columns=["_sr_rank", "_sr_tkey"], errors="ignore")
+    return out.reset_index(drop=True)
+
+
+def _pool_from_stay_csv_slice(sleep_stay: pd.DataFrame) -> pd.DataFrame:
+    #good wiki first class; osm fills gaps; same title prefers wiki
+    wiki, osm = _split_wiki_vs_osm_stays(sleep_stay)
+    wiki_pick = _subset_usable_else_empty(wiki)
+    osm_pick = _subset_usable_else_all(osm)
+    return _dedupe_stays_prefer_wiki(wiki_pick, osm_pick)
+
+
+def _live_osm_stay_backup(display_dest: str) -> pd.DataFrame:
+    try:
+        from hotel_source import fetch_osm_planner_sleep_rows
+    except Exception:
+        return pd.DataFrame()
+    try:
+        live = fetch_osm_planner_sleep_rows(display_dest, max_elements=28)
+    except Exception:
+        return pd.DataFrame()
+    if live.empty:
+        return live
+    live = live.copy()
+    if "source" not in live.columns:
+        live["source"] = "openstreetmap"
+    else:
+        s = live["source"].fillna("").astype(str).str.strip()
+        live["source"] = s.mask(s == "", "openstreetmap")
+    return _enforce_stay_destination(live, display_dest)
+
+
+def _stay_lodging_pool(
+    stay_scoped: pd.DataFrame, scoped: pd.DataFrame, display_dest: str
+) -> tuple[pd.DataFrame, str | None, dict[str, object]]:
+    #stay_dataset first for this city only; then live osm; then travel sleep from the same scoped slice
+    notice: str | None = None
+    meta: dict[str, object] = {
+        "stay_rows_for_city_all_sections": int(len(stay_scoped)),
+        "stay_sleep_section_rows_raw": 0,
+        "stay_csv_merged_pool_rows": 0,
+        "used_live_openstreetmap_fetch": False,
+        "used_travel_guide_sleep_fallback": False,
+    }
+    sleep_stay = _sleep_section_only(stay_scoped)
+    meta["stay_sleep_section_rows_raw"] = int(len(sleep_stay))
+    merged = _pool_from_stay_csv_slice(sleep_stay)
+    meta["stay_csv_merged_pool_rows"] = int(len(merged))
+    if merged.empty:
+        merged = _live_osm_stay_backup(display_dest)
+        meta["used_live_openstreetmap_fetch"] = bool(not merged.empty)
+    if merged.empty:
+        travel_sleep = _sleep_rows_filtered(scoped)
+        merged = _enforce_stay_destination(travel_sleep, display_dest)
+        meta["used_travel_guide_sleep_fallback"] = bool(not merged.empty)
+    if merged.empty:
+        notice = NO_LODGING_ANY_SOURCE_MSG.format(dest=display_dest)
+    meta["lodging_pool_rows_final"] = int(len(merged))
+    return merged, notice, meta
+
+
+def _stay_display_source(row: pd.Series) -> str:
+    s = _row_text(row, "source")
+    if s:
+        return s
+    if str(row.get("data_source", "") or "").strip().lower() == "osm":
+        return "openstreetmap"
+    return "wikivoyage"
+
+
 def _sleep_pool(
     scoped: pd.DataFrame,
     display_dest: str,
     trip_vibe: str,
     budget: str,
     must_see_interests: str,
+    *,
+    pool: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    pool = scoped[scoped["section"] == "Sleep"].copy()
-    if "usable_for_stay" in pool.columns:
-        good = pool[pool["usable_for_stay"] == 1]
-        if not good.empty:
-            pool = good
+    #pool= is merged stay rows for this city; else travel sleep only
+    pl = pool if pool is not None else _sleep_rows_filtered(scoped)
     return _intent_rank(
-        pool,
+        pl,
         display_dest,
         trip_vibe,
         budget,
         must_see_interests,
         "sleep",
-        cos_weight=0.52,
+        cos_weight=_sleep_cos_weight(budget),
         attach_scores=True,
     )
 
@@ -1330,31 +1803,330 @@ def _stay_passes_tier_gate(row: pd.Series, bk: str) -> bool:
     return True
 
 
+def _stay_budget_alignment_sentence(row: pd.Series, bk: str) -> str | None:
+    #plain-language tie to the trip budget tier and osm star hints (rule-based rank echo)
+    blob = _sleep_row_rank_text(row)
+    band = str(row.get("estimated_cost_band", "") or "").strip().lower()
+    osmb = _osm_star_band_from_row(row)
+    if bk == "splurge":
+        hints: list[str] = []
+        if band == "splurge":
+            hints.append("the listing tier tag reads splurge")
+        if osmb == "splurge":
+            hints.append("OpenStreetMap star tags read about four stars or higher")
+        rg = _lexicon_hit_count(blob, SLEEP_RANK_SPLURGE_TERMS) + sum(1 for w in LUXURY_STAY if w in blob)
+        if rg:
+            hints.append("wording carries luxury, boutique, or upscale lodging cues")
+        if hints:
+            return "Ranked up for your splurge budget because " + "; ".join(hints) + "."
+        return None
+    if bk == "budget":
+        hints = []
+        if band == "budget":
+            hints.append("the tier tag reads budget")
+        if osmb == "budget":
+            hints.append("map star tags skew toward simpler or two-star style")
+        if _lexicon_hit_count(blob, SLEEP_RANK_BUDGET_TERMS) or any(w in blob for w in ("hostel", "capsule", "dorm")):
+            hints.append("language reads affordable, practical, or hostel-style")
+        if hints:
+            return "Prioritized for your budget tier because " + "; ".join(hints) + "."
+        return None
+    if bk == "mid":
+        hints = []
+        if band == "mid":
+            hints.append("the tier tag reads mid-range")
+        if osmb == "mid":
+            hints.append("map star hints sit in a comfortable middle band")
+        if _lexicon_hit_count(blob, SLEEP_RANK_MID_TERMS):
+            hints.append("copy sounds like balanced everyday lodging")
+        if hints:
+            return "Fits your moderate budget because " + "; ".join(hints) + "."
+        return None
+    return None
+
+
 def _stay_match_reason(row: pd.Series, bk: str, vibe: str, interests: str) -> str:
     parts: list[str] = []
-    title = _row_text(row, "title").lower()
-    desc = _row_text(row, "description").lower()
-    text = f"{title} {desc}"
-    band = str(row.get("estimated_cost_band", "") or "").strip().lower()
-    if band and band != "unknown":
-        parts.append(f'Listing cost band is tagged "{band}".')
-    luxish = _lexicon_hit_count(text, SLEEP_SPLURGE_LEXICON) + sum(1 for w in LUXURY_STAY if w in text)
+    src = str(row.get("source", "") or "").strip().casefold()
+    ds = str(row.get("data_source", "") or "").strip().lower()
+    if ds == "osm" or src == "openstreetmap":
+        parts.append("OpenStreetMap lodging pin (community map data).")
+    elif src == "wikivoyage":
+        parts.append("Wikivoyage travel guide listing.")
+    blob = _sleep_row_rank_text(row)
+    align = _stay_budget_alignment_sentence(row, bk)
+    if align:
+        parts.append(align)
+    luxish = _lexicon_hit_count(blob, SLEEP_SPLURGE_LEXICON) + sum(1 for w in LUXURY_STAY if w in blob)
     if bk == "splurge" and luxish > 0:
         parts.append("Wording leans premium, luxury, or boutique lodging.")
     elif bk == "budget" and (
-        _lexicon_hit_count(text, SLEEP_BUDGET_LEXICON) > 0
-        or "hostel" in text
-        or "capsule" in text
+        _lexicon_hit_count(blob, SLEEP_BUDGET_LEXICON) > 0
+        or "hostel" in blob
+        or "capsule" in blob
     ):
         parts.append("Reads budget-conscious, hostel-style, or practical on price.")
-    elif bk == "mid" and _lexicon_hit_count(text, SLEEP_MID_LEXICON) > 0:
+    elif bk == "mid" and _lexicon_hit_count(blob, SLEEP_MID_LEXICON) > 0:
         parts.append("Sounds like a mid-range or everyday-comfort stay.")
-    hits = [t for t in _intent_tokens(vibe, interests) if t in text][:4]
+    hits = [t for t in _intent_tokens(vibe, interests) if t in blob][:4]
     if hits:
         parts.append(f"Touches your trip keywords: {', '.join(hits)}.")
     if not parts:
-        parts.append("Best semantic fit in the sleep listings we have for this city and your inputs.")
+        parts.append("Best fit among the lodging rows we have for this city and your inputs.")
     return " ".join(parts)
+
+
+_STAY_SUMMARY_SIGNAL: tuple[str, ...] = (
+    "breakfast",
+    "wifi",
+    "wi-fi",
+    "metro",
+    "station",
+    "walk",
+    "bus",
+    "tram",
+    "airport",
+    "terrace",
+    "rooftop",
+    "pool",
+    "spa",
+    "garden",
+    "quiet",
+    "dorm",
+    "hostel",
+    "shared",
+    "kitchen",
+    "laundry",
+    "historic",
+    "boutique",
+    "ensuite",
+    "en-suite",
+    "family",
+    "parking",
+    "elevator",
+    "lift",
+    "balcony",
+    "view",
+)
+
+_STAY_GENERIC_OPENERS: tuple[str, ...] = (
+    "located in ",
+    "situated in ",
+    "set in ",
+    "conveniently located",
+    "conveniently situated",
+    "this hotel ",
+    "this property ",
+    "this hostel ",
+    "the hotel ",
+    "the property ",
+    "the hostel ",
+    "welcome to ",
+)
+
+_STAY_BOILERPLATE_FRAGMENTS: tuple[str, ...] = (
+    "for more information",
+    "please visit",
+    "visit our website",
+    "visit www",
+    "check availability",
+    "book online",
+    "click here",
+    "contact us today",
+)
+
+
+def _split_stay_sentences(text: str) -> list[str]:
+    #simple split on sentence end; good enough for guide blurbs
+    t = " ".join(text.split()).strip()
+    if not t:
+        return []
+    return [p.strip() for p in re.split(r"(?<=[.!?])\s+", t) if p.strip()]
+
+
+def _dedupe_stay_sentences(text: str) -> str:
+    #drop repeated sentences so cards are not padded with echo
+    parts = _split_stay_sentences(text)
+    if not parts:
+        return " ".join(text.split()).strip()
+    seen: set[str] = set()
+    out: list[str] = []
+    for p in parts:
+        key = p.casefold().rstrip(".!? ")
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(p)
+    return " ".join(out)
+
+
+def _strip_stay_generic_openers(text: str) -> str:
+    t = " ".join(text.split()).strip()
+    if not t:
+        return ""
+    for _ in range(3):
+        low = t.casefold()
+        hit = False
+        for p in _STAY_GENERIC_OPENERS:
+            if low.startswith(p):
+                t = t[len(p) :].lstrip(" ,.;—-").strip()
+                hit = True
+                break
+        if not hit:
+            break
+    return t
+
+
+def _stay_sentence_is_boilerplate(s: str) -> bool:
+    low = s.casefold().strip()
+    if len(low) < 18:
+        return True
+    if any(b in low for b in _STAY_BOILERPLATE_FRAGMENTS):
+        return True
+    if len(low) < 72 and low.startswith(("located ", "situated ", "set in the", "set in a")):
+        return True
+    return False
+
+
+def _stay_pick_summary_sentence(sents: list[str]) -> str:
+    #prefer a concrete line over thin location filler
+    best = ""
+    best_score = -1
+    for s in sents:
+        s = s.strip()
+        if not s or _stay_sentence_is_boilerplate(s):
+            continue
+        low = s.casefold()
+        score = sum(1 for w in _STAY_SUMMARY_SIGNAL if w in low)
+        score += min(len(s) // 50, 2)
+        if score > best_score or (score == best_score and len(s) > len(best)):
+            best_score = score
+            best = s
+    if best:
+        return best.rstrip()
+    for s in sents:
+        s = s.strip()
+        if len(s) >= 18:
+            return s.rstrip()
+    return ""
+
+
+def _clip_stay_words(text: str, max_chars: int) -> str:
+    t = " ".join(text.split()).strip()
+    if len(t) <= max_chars:
+        return t
+    cut = t[:max_chars].rsplit(" ", 1)[0]
+    return cut + "…"
+
+
+def _first_stay_sentence(text: str) -> str:
+    t = " ".join(text.split()).strip()
+    if not t:
+        return ""
+    for sep in (". ", "? ", "! "):
+        i = t.find(sep)
+        if i != -1:
+            return t[: i + len(sep)].strip()
+    return t
+
+
+def _normalize_stars_field_in_sentence(s: str) -> str:
+    #strip junk like plural "s" after a digit (4s) so facts stay numeric for the card ui
+    def repl(m: re.Match) -> str:
+        prefix, chunk = m.group(1), m.group(2).strip()
+        mm = re.search(r"\d+(?:[.,]\d+)?", chunk.replace(",", "."))
+        if not mm:
+            cleaned = re.sub(r"(?<=\d)s\b", "", chunk, flags=re.I).strip()
+            return f"{prefix}{cleaned}"
+        v = float(mm.group(0).replace(",", "."))
+        v = min(5.0, max(0.0, v))
+        if abs(v - round(v)) < 1e-6:
+            num = str(int(round(v)))
+        else:
+            num = f"{v:.1f}".rstrip("0").rstrip(".")
+        return f"{prefix}{num}"
+
+    return re.sub(r"(?i)(Stars:\s*)([^·]+?)(?=\s*·|\Z)", repl, s)
+
+
+def polish_stay_description_for_display(text: str) -> str:
+    #legacy stay_dataset osm blurbs: drop coords, fix label caps, separate facts for scanning
+    s = " ".join(text.split()).strip()
+    if not s:
+        return ""
+    s = re.sub(r"(?i)\s*coordinates\s+about\s+[\d.,]+\s*,\s*[\d.,]+\s*\.?", "", s)
+    s = re.sub(r"\s*\.\s*\.", ".", s)
+    s = re.sub(r"(?i)\bstars\s+tag\s*:", "Stars:", s)
+    s = re.sub(r"(?i)\bbrand\s*:", "Brand:", s)
+    s = re.sub(r"(?i)\boperator\s*:", "Operator:", s)
+    s = re.sub(r"(?i)\baddress\s+hint\s*:", "Address:", s)
+    for pat, rep in (
+        (r"^hotel\b", "Hotel"),
+        (r"^hostel\b", "Hostel"),
+        (r"^motel\b", "Motel"),
+        (r"^guest house\b", "Guest House"),
+        (r"^guest_house\b", "Guest House"),
+        (r"^apartment\b", "Apartment"),
+        (r"^chalet\b", "Chalet"),
+    ):
+        s = re.sub(pat, rep, s, count=1, flags=re.I)
+    needle = "(openstreetmap community map)"
+    idx = s.casefold().find(needle.casefold())
+    if idx != -1:
+        close = s.find(")", idx)
+        if close != -1:
+            head_end = close + 1
+            while head_end < len(s) and s[head_end] in " \t":
+                head_end += 1
+            if head_end < len(s) and s[head_end] == ".":
+                head_end += 1
+            while head_end < len(s) and s[head_end] == " ":
+                head_end += 1
+            head, tail = s[:head_end].strip(), s[head_end:].strip()
+            if tail:
+                tail = re.sub(r"\s*\.\s+", " · ", tail)
+                tail = re.sub(r"\s*·\s*·\s*", " · ", tail)
+                s = f"{head} {tail}".strip()
+    s = _normalize_stars_field_in_sentence(s)
+    return re.sub(r"\s{2,}", " ", s).strip()
+
+
+def _hotel_display_summaries(raw_description: str) -> tuple[str, str]:
+    #tight scan line plus a trimmed full blurb; drops echo and thin openers where we can
+    raw = _clean_scalar(raw_description)
+    if not raw:
+        return "", ""
+    polished = polish_stay_description_for_display(raw)
+    base = _strip_meta_from_description(polished)
+    deduped = _dedupe_stay_sentences(base)
+    full_description = clean_description_for_display(deduped, soft_target=220, hard_max=340).strip()
+    lean = _strip_stay_generic_openers(deduped)
+    sents = _split_stay_sentences(lean) or _split_stay_sentences(deduped)
+    primary = _stay_pick_summary_sentence(sents)
+    if not primary:
+        primary = _first_stay_sentence(deduped)
+    short_summary = primary.strip()
+    if short_summary and short_summary[-1] not in ".!?":
+        short_summary += "."
+    #at most ~two short lines in the ui
+    max_short = 175
+    if len(short_summary) < 100:
+        for s in sents:
+            sc = (s or "").strip()
+            if not sc:
+                continue
+            if sc.casefold().rstrip(".!?") == short_summary.casefold().rstrip(".!?"):
+                continue
+            if _stay_sentence_is_boilerplate(sc):
+                continue
+            merged = f"{short_summary.rstrip('.!?')}. {sc}".strip()
+            if len(merged) <= max_short + 15:
+                short_summary = merged if merged[-1] in ".!?" else merged + "."
+                break
+    short_summary = _clip_stay_words(short_summary, max_short)
+    if not short_summary and full_description:
+        short_summary = _clip_stay_words(_first_stay_sentence(full_description), max_short)
+    return short_summary.strip(), full_description
 
 
 def _build_stays(
@@ -1375,36 +2147,42 @@ def _build_stays(
     if pick.empty:
         if bk == "splurge":
             notice = (
-                f"No sleep listings for {display_dest} in our scraped data clearly read as premium or high-end "
-                "for a splurge trip, so we are not inventing posh picks. Try a dedicated hotel search or another guide."
+                f"No listings for {display_dest} clearly read as premium or high-end lodging "
+                "for a splurge trip under our filters. Try a dedicated hotel search."
             )
         elif bk == "budget":
             notice = (
-                f"No sleep listings here read confidently as budget or hostel-style for {display_dest}. "
-                "A hostel-focused site may be safer than stretching these rows."
+                f"No listings here read confidently as budget or hostel-style for {display_dest} "
+                "with the current filters. A hostel-focused site may be safer."
             )
         else:
             notice = (
-                f"We could not find Wikivoyage sleep rows that still look like real lodging for {display_dest} "
-                "under your filters."
+                f"No listings for {display_dest} matched both the lodging-shape and budget filters "
+                "we apply before showing picks."
             )
         return [], notice
 
     rows_out: list[dict[str, str]] = []
     for _, row in pick.iterrows():
         title = _row_text(row, "title")
-        desc = clean_description_for_display(_row_text(row, "description"), soft_target=150, hard_max=280)
-        if not title and not desc:
+        raw_desc = _row_text(row, "description")
+        short_summary, full_description = _hotel_display_summaries(raw_desc)
+        if not title and not short_summary and not full_description:
             continue
         if not title:
             title = _display_title(row, display_dest)
         band = _clean_scalar(row.get("estimated_cost_band", "")) if "estimated_cost_band" in row.index else ""
         if not band:
             band = "unknown"
+        src_label = _stay_display_source(row)
         rows_out.append(
             {
                 "title": title,
-                "description": desc,
+                "short_summary": short_summary,
+                "full_description": full_description,
+                "short_description": short_summary,
+                "description": full_description,
+                "source": src_label,
                 "estimated_cost_band": band,
                 "match_reason": _stay_match_reason(row, bk, vibe, interests),
             }
@@ -1413,7 +2191,7 @@ def _build_stays(
             break
     if not rows_out:
         return [], (
-            f"Sleep listings for {display_dest} did not yield readable stay blurbs after filtering, "
+            f"Stay rows for {display_dest} did not yield readable blurbs after filtering, "
             "so we are not padding the list."
         )
     return rows_out, notice
@@ -1628,9 +2406,15 @@ def packing_list(vibe: str, days: int, destination: str) -> dict[str, list[str]]
                 out.append(line)
         return out
 
+    def _cap_first_word(s: str) -> str:
+        t = s.strip()
+        if not t:
+            return t
+        return t[0].upper() + t[1:]
+
     return {
-        "essentials": _dedupe(essentials),
-        "for_this_trip": _dedupe(trip_specific),
+        "essentials": [_cap_first_word(x) for x in _dedupe(essentials)],
+        "for_this_trip": [_cap_first_word(x) for x in _dedupe(trip_specific)],
     }
 
 
@@ -1661,13 +2445,26 @@ def _round_money_usd(n: float) -> int:
     return max(0, int(round(n / 10.0) * 10))
 
 
+def format_usd_range(lo: int, hi: int) -> str:
+    #single string shape for ui rows so streamlit always sees consistent money text
+    return f"${lo:,}–${hi:,}"
+
+
+_BUDGET_LABEL_PRETTY = {
+    "budget": "Budget trip",
+    "mid": "Mid-range trip",
+    "splurge": "Splurge trip",
+    "not sure": "Flexible budget",
+}
+
+
 def build_budget_breakdown(
     destination: str,
     num_days: int,
     budget_key: str,
     vibe: str,
     interests: str = "",
-) -> dict[str, tuple[int, int]]:
+) -> dict[str, object]:
     #rule-of-thumb category totals in usd for the whole trip; excludes flights
     days = max(1, int(num_days))
     key = (budget_key or "not sure").strip().lower()
@@ -1675,7 +2472,7 @@ def build_budget_breakdown(
     city_m = _city_cost_multiplier(destination)
     vibe_m = _vibe_category_multipliers(vibe, interests)
 
-    out: dict[str, tuple[int, int]] = {}
+    out: dict[str, object] = {}
     sum_lo = 0
     sum_hi = 0
     for cat in ("lodging", "food", "transit", "activities"):
@@ -1691,33 +2488,49 @@ def build_budget_breakdown(
         sum_hi += hi_i
 
     out["total_estimate"] = (sum_lo, sum_hi)
+    tier = (budget_key or "not sure").strip().lower()
+    out["budget_label"] = _BUDGET_LABEL_PRETTY.get(tier, _BUDGET_LABEL_PRETTY["not sure"])
+    out["display"] = {
+        "lodging": format_usd_range(*(out["lodging_estimate"])),
+        "food": format_usd_range(*(out["food_estimate"])),
+        "transit": format_usd_range(*(out["transit_estimate"])),
+        "activities": format_usd_range(*(out["activities_estimate"])),
+        "total": format_usd_range(*(out["total_estimate"])),
+    }
+    out["summary_sentence"] = _budget_summary_sentence(destination, days, out)
     return out
 
 
 def _budget_summary_sentence(
     destination: str,
     days: int,
-    breakdown: dict[str, tuple[int, int]],
+    breakdown: dict[str, object],
 ) -> str:
-    tlo, thi = breakdown["total_estimate"]
+    tlo, thi = breakdown["total_estimate"]  # type: ignore[misc]
     d = (destination or "").strip() or "your trip"
     return (
-        f"rough rule-based window for {d} ({days} days): about ${tlo:,}–${thi:,} usd total "
-        f"(lodging + food + local transit + light activities). excludes flights and big tours."
+        f"Rough rule-based window for {d} ({days} days): about {format_usd_range(tlo, thi)} USD total "
+        f"(lodging, food, local transit, light activities). Flights and big tours sit outside this band."
     )
 
 
-def _budget_detail_lines(breakdown: dict[str, tuple[int, int]]) -> list[str]:
+def _budget_detail_lines(breakdown: dict[str, object]) -> list[str]:
     labels = (
-        ("lodging_estimate", "lodging"),
-        ("food_estimate", "food"),
-        ("transit_estimate", "local transit"),
-        ("activities_estimate", "activities & tickets"),
+        ("lodging_estimate", "lodging", "lodging"),
+        ("food_estimate", "food", "food"),
+        ("transit_estimate", "local transit", "transit"),
+        ("activities_estimate", "activities & tickets", "activities"),
     )
-    lines = []
-    for k, label in labels:
-        lo, hi = breakdown[k]
-        lines.append(f"{label}: about ${lo:,}–${hi:,}")
+    lines: list[str] = []
+    disp_raw = breakdown.get("display")
+    disp = disp_raw if isinstance(disp_raw, dict) else {}
+    for k, label, dkey in labels:
+        amt = disp.get(dkey)
+        if isinstance(amt, str):
+            lines.append(f"{label}: {amt}")
+            continue
+        lo, hi = breakdown[k]  # type: ignore[misc]
+        lines.append(f"{label}: {format_usd_range(lo, hi)}")
     return lines
 
 
@@ -1739,8 +2552,10 @@ def get_recommendations(
     interests = (must_see_interests or "").strip()
 
     df = _load_dataset()
+    stay_df = _load_stay_dataset()
     cities = supported_destinations(df)
     scoped = strict_rows_for_destination(df, raw_dest)
+    stay_scoped = strict_rows_for_destination(stay_df, raw_dest) if not stay_df.empty else pd.DataFrame()
 
     if scoped.empty:
         bd = build_budget_breakdown(raw_dest or "your trip", days, budget_key, vibe, interests)
@@ -1758,11 +2573,13 @@ def get_recommendations(
             "stay_suggestions_notice": None,
             "packing": packing_list(f"{vibe} {interests}".strip(), days, raw_dest),
             "budget_breakdown": bd,
-            "budget_summary": _budget_summary_sentence(raw_dest or "your trip", days, bd),
+            "budget_summary": bd["summary_sentence"],
             "budget_lines": _budget_detail_lines(bd),
         }
         if debug:
             dq = (raw_dest or "your trip").strip() or "your trip"
+            n_stay_city = int(len(stay_scoped)) if not stay_scoped.empty else 0
+            n_stay_sleep = int(len(_sleep_section_only(stay_scoped))) if not stay_scoped.empty else 0
             out["debug"] = {
                 "scoped_row_count": 0,
                 "ranking_queries": _ranking_queries(dq, vibe, budget_key, interests),
@@ -1770,16 +2587,44 @@ def get_recommendations(
                 "top_eat": [],
                 "top_drink": [],
                 "top_hotel_rows": [],
+                "hotel_debug": {
+                    "stay_pipeline_meta": {},
+                    "stay_rows_for_city_all_sections": n_stay_city,
+                    "stay_sleep_section_rows_raw": n_stay_sleep,
+                    "stay_csv_merged_pool_rows": 0,
+                    "used_live_openstreetmap_fetch": False,
+                    "used_travel_guide_sleep_fallback": False,
+                    "lodging_pool_rows_pre_rank": 0,
+                    "in_pool_wikivoyage": 0,
+                    "in_pool_openstreetmap": 0,
+                    "in_pool_travel_guide_sleep": 0,
+                    "hotel_debug_hints": [
+                        "travel_dataset has no rows for this city — hotel pipeline did not run (fix city name or scrape)."
+                    ],
+                    "filter_stages": _hotel_filter_stage_counts(pd.DataFrame(), budget_key),
+                    "stays_cards_returned": 0,
+                    "hotel_candidates_pre_rank": [],
+                    "hotel_top_after_ranking": [],
+                },
             }
         return out
 
     display_dest = _canonical_destination_name(scoped)
+    stay_scoped_f = _enforce_stay_destination(stay_scoped, display_dest)
+    scoped_f = _enforce_stay_destination(scoped, display_dest)
+
     see_do = _itinerary_pool(
-        scoped, ("See", "Do"), display_dest, vibe, budget_key, interests, "see_do"
+        scoped_f, ("See", "Do"), display_dest, vibe, budget_key, interests, "see_do"
     )
-    eat = _itinerary_pool(scoped, ("Eat",), display_dest, vibe, budget_key, interests, "eat")
-    drink = _itinerary_pool(scoped, ("Drink",), display_dest, vibe, budget_key, interests, "drink")
-    sleep_ranked = _sleep_pool(scoped, display_dest, vibe, budget_key, interests)
+    eat = _itinerary_pool(scoped_f, ("Eat",), display_dest, vibe, budget_key, interests, "eat")
+    drink = _itinerary_pool(scoped_f, ("Drink",), display_dest, vibe, budget_key, interests, "drink")
+
+    pool_df, pool_notice, pool_meta = _stay_lodging_pool(stay_scoped_f, scoped_f, display_dest)
+    sleep_ranked = (
+        _sleep_pool(scoped_f, display_dest, vibe, budget_key, interests, pool=pool_df)
+        if not pool_df.empty
+        else pd.DataFrame()
+    )
 
     checklist = build_checklist(display_dest, days, vibe, budget_key)
 
@@ -1787,6 +2632,8 @@ def get_recommendations(
         days, see_do, eat, drink, display_dest, vibe, budget_key, interests
     )
     stays, stay_notice = _build_stays(sleep_ranked, display_dest, budget_key, vibe, interests)
+    if not stays and pool_notice and stay_notice is None:
+        stay_notice = pool_notice
 
     packing = packing_list(f"{vibe} {interests}".strip(), days, display_dest)
     bd = build_budget_breakdown(display_dest, days, budget_key, vibe, interests)
@@ -1805,16 +2652,38 @@ def get_recommendations(
         "stay_suggestions_notice": stay_notice,
         "packing": packing,
         "budget_breakdown": bd,
-        "budget_summary": _budget_summary_sentence(display_dest, days, bd),
+        "budget_summary": bd["summary_sentence"],
         "budget_lines": _budget_detail_lines(bd),
     }
     if debug:
+        src_counts = _count_stay_pool_sources(pool_df)
+        filter_counts = _hotel_filter_stage_counts(sleep_ranked, budget_key)
+        hotel_debug = {
+            "stay_pipeline_meta": pool_meta,
+            "stay_rows_for_city_all_sections": int(pool_meta.get("stay_rows_for_city_all_sections", 0) or 0),
+            "stay_sleep_section_rows_raw": int(pool_meta.get("stay_sleep_section_rows_raw", 0) or 0),
+            "stay_csv_merged_pool_rows": int(pool_meta.get("stay_csv_merged_pool_rows", 0) or 0),
+            "used_live_openstreetmap_fetch": bool(pool_meta.get("used_live_openstreetmap_fetch")),
+            "used_travel_guide_sleep_fallback": bool(pool_meta.get("used_travel_guide_sleep_fallback")),
+            "lodging_pool_rows_pre_rank": int(len(pool_df)),
+            "in_pool_wikivoyage": int(src_counts.get("wikivoyage", 0)),
+            "in_pool_openstreetmap": int(src_counts.get("openstreetmap", 0)),
+            "in_pool_travel_guide_sleep": int(src_counts.get("travel_guide", 0)),
+            "hotel_debug_hints": _hotel_debug_hint_lines(
+                pool_meta, pool_df, sleep_ranked, stays, src_counts, filter_counts
+            ),
+            "filter_stages": filter_counts,
+            "stays_cards_returned": int(len(stays)),
+            "hotel_candidates_pre_rank": _debug_hotel_candidates_pre_rank(pool_df),
+            "hotel_top_after_ranking": _debug_hotel_rows_after_ranking(sleep_ranked),
+        }
         out["debug"] = {
-            "scoped_row_count": int(len(scoped)),
+            "scoped_row_count": int(len(scoped_f)),
             "ranking_queries": _ranking_queries(display_dest, vibe, budget_key, interests),
             "top_see_do": _debug_top_rows(see_do),
             "top_eat": _debug_top_rows(eat),
             "top_drink": _debug_top_rows(drink),
             "top_hotel_rows": _debug_top_rows(sleep_ranked),
+            "hotel_debug": hotel_debug,
         }
     return out
