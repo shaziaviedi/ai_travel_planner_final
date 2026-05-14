@@ -8,6 +8,7 @@ import html
 import json
 import math
 import re
+import textwrap
 import time
 from pathlib import Path
 
@@ -1238,8 +1239,8 @@ def inject_styles() -> None:
             text-shadow: 0 0 14px rgba(232, 200, 120, 0.28);
         }
         .stay-stack__foot-note {
-            margin: 3.75rem 0 0;
-            padding-top: 0.55rem;
+            margin: 5.25rem 0 0;
+            padding-top: 0.9rem;
             max-width: 40rem;
             font-size: 0.82rem;
             line-height: 1.55;
@@ -1306,7 +1307,7 @@ def inject_styles() -> None:
                 rgba(34, 38, 58, 0.58) 0%,
                 rgba(24, 28, 46, 0.62) 100%
             );
-            padding: clamp(1.65rem, 2.5vw, 2.15rem) clamp(1.35rem, 3.5vw, 2.5rem) clamp(1.75rem, 2.6vw, 2.25rem);
+            padding: clamp(1.85rem, 2.8vw, 2.35rem) clamp(1.45rem, 3.8vw, 2.65rem) clamp(1.95rem, 2.9vw, 2.5rem);
             box-shadow: 0 20px 52px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.055);
             backdrop-filter: blur(14px) saturate(1.04);
         }
@@ -1314,9 +1315,7 @@ def inject_styles() -> None:
             max-width: none;
         }
         .budget-snapshot__title {
-            margin: 0 0 1.1rem;
-            padding-bottom: 0.85rem;
-            border-bottom: 1px solid rgba(100, 92, 140, 0.28);
+            margin: 0 0 1.65rem;
             font-size: clamp(1.42rem, 2.4vw, 1.75rem);
             font-weight: 700;
             letter-spacing: -0.035em;
@@ -1326,37 +1325,38 @@ def inject_styles() -> None:
         .budget-snapshot__layout {
             display: grid;
             grid-template-columns: 1fr;
-            gap: 1.65rem 0;
-            margin-top: 0.15rem;
+            gap: 2rem 0;
+            margin-top: 0;
             align-items: start;
         }
         @media (min-width: 880px) {
             .budget-snapshot__layout {
                 grid-template-columns: minmax(11rem, 0.34fr) minmax(0, 1fr);
-                gap: 0 2.75rem;
+                gap: 0 3rem;
             }
             .budget-snapshot__rail {
-                padding-right: 1.75rem;
-                border-right: 1px solid rgba(110, 100, 150, 0.28);
+                padding-right: 0;
             }
         }
         @media (max-width: 879px) {
             .budget-snapshot__rail {
-                padding-bottom: 1.15rem;
-                margin-bottom: 0.15rem;
-                border-bottom: 1px solid rgba(110, 100, 150, 0.22);
+                padding-bottom: 0;
+                margin-bottom: 0;
             }
         }
         .budget-snapshot__rail .budget-lede {
-            margin-bottom: 0;
+            margin: 0.65rem 0 1.1rem;
         }
         .budget-snapshot__figures {
             min-width: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 1.85rem;
         }
         .budget-snapshot__tier {
             display: inline-block;
-            margin: 0 0 0.85rem;
-            padding: 0.38rem 0.85rem;
+            margin: 0 0 1rem;
+            padding: 0.4rem 0.95rem;
             border-radius: 999px;
             font-size: 0.72rem;
             font-weight: 700;
@@ -1377,21 +1377,21 @@ def inject_styles() -> None:
         }
         .budget-lede {
             margin: 0 0 1.25rem;
-            font-size: 0.93rem;
+            font-size: 0.95rem;
             font-weight: 400;
             color: #a4b0d0;
-            line-height: 1.68;
+            line-height: 1.72;
         }
         .budget-stack {
             display: grid;
             grid-template-columns: 1fr;
-            gap: 1.05rem;
-            margin: 0 0 0.15rem;
+            gap: 1.35rem;
+            margin: 0;
         }
         @media (min-width: 640px) {
             .budget-stack {
                 grid-template-columns: repeat(2, minmax(0, 1fr));
-                gap: 1.15rem 1.35rem;
+                gap: 1.35rem 1.5rem;
             }
         }
         .budget-line-card {
@@ -1399,9 +1399,9 @@ def inject_styles() -> None:
             flex-direction: column;
             align-items: stretch;
             justify-content: space-between;
-            gap: 0.65rem;
-            min-height: 6.5rem;
-            padding: 1.15rem 1.2rem 1.2rem;
+            gap: 0.8rem;
+            min-height: 6.75rem;
+            padding: 1.25rem 1.3rem 1.3rem;
             border-radius: 16px;
             border: 1px solid rgba(100, 92, 138, 0.32);
             border-left: 3px solid rgba(168, 148, 218, 0.55);
@@ -1417,7 +1417,7 @@ def inject_styles() -> None:
         .budget-line-card__meta {
             display: flex;
             flex-direction: column;
-            gap: 0.28rem;
+            gap: 0.42rem;
             min-width: 0;
         }
         .budget-line-card__name {
@@ -1441,13 +1441,13 @@ def inject_styles() -> None:
             color: #ffffff;
             line-height: 1.12;
             margin-top: auto;
-            padding-top: 0.35rem;
+            padding-top: 0.55rem;
             border-top: 1px solid rgba(90, 88, 120, 0.35);
         }
         .budget-summary-card {
             position: relative;
-            margin-top: 1.65rem;
-            padding: 1.75rem 1.65rem 1.85rem;
+            margin-top: 0;
+            padding: 2rem 1.75rem 2.05rem;
             border-radius: 18px;
             border: 1px solid rgba(200, 175, 255, 0.5);
             background: linear-gradient(
@@ -1473,7 +1473,7 @@ def inject_styles() -> None:
             opacity: 0.95;
         }
         .budget-summary-card__label {
-            margin: 0.35rem 0 0.5rem;
+            margin: 0.55rem 0 0.65rem;
             font-size: 0.74rem;
             font-weight: 700;
             letter-spacing: 0.2em;
@@ -1491,32 +1491,22 @@ def inject_styles() -> None:
             text-shadow: 0 2px 28px rgba(40, 20, 80, 0.45);
         }
         .budget-summary-card__hint {
-            margin: 0.65rem 0 0;
-            font-size: 0.8rem;
+            margin: 0.85rem 0 0;
+            font-size: 0.82rem;
             font-weight: 400;
-            line-height: 1.55;
+            line-height: 1.62;
             color: #b8c2de;
             letter-spacing: 0.02em;
         }
-        .budget-snapshot__note {
-            margin: 1.45rem 0 0;
-            padding: 1rem 1.1rem;
-            border-radius: 14px;
-            font-size: 0.82rem;
-            line-height: 1.62;
-            color: #9aa6c4;
-            background: rgba(18, 22, 40, 0.5);
-            border: 1px solid rgba(88, 82, 120, 0.32);
-        }
         .budget-tips {
-            margin-top: 1.35rem;
-            padding: 1rem 1.1rem;
+            margin-top: 0;
+            padding: 1.15rem 1.25rem 1.2rem;
             border-radius: 14px;
             background: rgba(36, 40, 62, 0.45);
             border: 1px solid rgba(100, 90, 140, 0.25);
         }
         .budget-tips__title {
-            margin: 0 0 0.5rem;
+            margin: 0 0 0.65rem;
             font-size: var(--somnia-fs-cap);
             letter-spacing: 0.06em;
             text-transform: none;
@@ -1525,12 +1515,12 @@ def inject_styles() -> None:
         }
         .budget-tips ul {
             margin: 0;
-            padding-left: 1.15rem;
+            padding-left: 1.2rem;
             color: #aeb9dd;
             font-size: var(--somnia-fs-body);
-            line-height: 1.62;
+            line-height: 1.72;
         }
-        .budget-tips li { margin-bottom: 0.42rem; }
+        .budget-tips li { margin-bottom: 0.55rem; }
         .budget-tip-em { font-weight: 600; color: #ddd4f8; }
         ul.budget-bits {
             margin: 0;
@@ -1539,12 +1529,13 @@ def inject_styles() -> None:
             font-size: var(--somnia-fs-body);
             line-height: 1.45;
         }
-        ul.budget-bits li { margin-bottom: 0.25rem; }
+        ul.budget-bits li { margin-bottom: 0.45rem; }
         .budget-foot {
             font-size: 0.74rem;
             color: #6f7d9a;
-            margin: 1.15rem 0 0;
-            line-height: 1.55;
+            margin: 0;
+            line-height: 1.62;
+            padding-top: 0.15rem;
         }
         .debug-section-head {
             font-size: var(--somnia-fs-section);
@@ -2323,14 +2314,14 @@ def _budget_breakdown_card_html(plan: dict, bd: dict) -> str:
     #two-column snapshot on wide view: tier + summary rail, figures + total use the rest of the tab
     disp, tier, summary = _budget_display_bundle(plan, bd)
     specs = (
-        ("Lodging", "lodging", "stays · whole trip"),
-        ("Food", "food", "meals and snacks · whole trip"),
-        ("Transit", "transit", "local transport · whole trip"),
-        ("Activities", "activities", "entries and fun · whole trip"),
+        ("Lodging", "lodging", "Where you sleep for the full trip"),
+        ("Food", "food", "Meals and snacks across all days"),
+        ("Transit", "transit", "Local transport, not your flight to the city"),
+        ("Activities", "activities", "Tickets and paid fun, light outings"),
     )
     body_rows: list[str] = []
     for name, dkey, hint in specs:
-        amt = disp.get(dkey, "—")
+        amt = disp.get(dkey, "n/a")
         body_rows.append(
             '<article class="budget-line-card">'
             '<div class="budget-line-card__meta">'
@@ -2340,32 +2331,27 @@ def _budget_breakdown_card_html(plan: dict, bd: dict) -> str:
             f'<span class="budget-line-card__amt">{_h(amt)}</span>'
             "</article>"
         )
-    total_s = disp.get("total", "—")
+    total_s = disp.get("total", "n/a")
     days = max(1, int(plan.get("num_days") or 1))
     tips = (
         "<div class='budget-tips'>"
-        "<p class='budget-tips__title'>How to read this</p>"
+        "<p class='budget-tips__title'>What each band covers</p>"
         "<ul>"
-        "<li><span class='budget-tip-em'>Lodging ÷ nights</span> ≈ a nightly filter that fits this trip shape.</li>"
-        "<li><span class='budget-tip-em'>Food ÷ days</span> ≈ a soft daily meals + snacks ceiling.</li>"
-        "<li><span class='budget-tip-em'>Transit + activities</span> flex first when one category runs hot.</li>"
-        f"<li><span class='budget-tip-em'>Total</span> sums the four bands above — sanity-check big bookings against {_h(total_s)}.</li>"
+        "<li><span class='budget-tip-em'>Lodging</span> is for every night of the trip, not a single night rate.</li>"
+        "<li><span class='budget-tip-em'>Food</span> is a soft ceiling for meals and snacks spread across your days.</li>"
+        "<li><span class='budget-tip-em'>Transit</span> is local getting around. It does not include flights to your destination.</li>"
+        "<li><span class='budget-tip-em'>Activities</span> is entries and smaller paid plans, not full luxury tours.</li>"
+        f"<li><span class='budget-tip-em'>Total</span> adds those four bands. Use {_h(total_s)} as a quick check before you lock in large bookings.</li>"
         "</ul></div>"
     )
     summary_h = _h(summary) if summary else ""
     lede = f'<p class="budget-lede">{summary_h}</p>' if summary_h else ""
     tier_html = f'<p class="budget-snapshot__tier">{_h(tier)}</p>' if tier else ""
-    rough_note = (
-        "<p class='budget-snapshot__note'>"
-        "Rough estimate only — not a quote. Real spend shifts with how you book, "
-        "seasonality, and what you add at the last minute."
-        "</p>"
-    )
     foot = (
         "<p class='budget-foot'>"
-        "Rule-based model · excludes flights and major tours · "
-        "Unknown cities use a neutral cost factor (1.0) · "
-        f"Shown for {days} {'days' if days != 1 else 'day'}"
+        "Rule-based model, excludes flights and major tours, "
+        "unknown cities use a neutral cost factor (1.0), "
+        f"shown for {days} {'days' if days != 1 else 'day'}."
         "</p>"
     )
     breakdown = (
@@ -2376,9 +2362,9 @@ def _budget_breakdown_card_html(plan: dict, bd: dict) -> str:
         '<div class="budget-summary-card" role="region" aria-label="Estimated total trip cost">'
         '<p class="budget-summary-card__label">Estimated total</p>'
         f'<p class="budget-summary-card__value">{_h(total_s)}</p>'
-        '<p class="budget-summary-card__hint">USD · lodging + food + transit + activities (whole trip)</p>'
+        '<p class="budget-summary-card__hint">Whole trip in USD: lodging, food, local transit, and light activities. Flights are not included.</p>'
         "</div>"
-        f"{rough_note}{tips}{foot}"
+        f"{tips}{foot}"
         "</div>"
     )
     rail = (
@@ -2390,7 +2376,7 @@ def _budget_breakdown_card_html(plan: dict, bd: dict) -> str:
     return (
         '<div class="budget-snapshot">'
         '<div class="budget-card budget-card--breakdown">'
-        '<h2 class="budget-snapshot__title">Budget snapshot</h2>'
+        '<h2 class="budget-snapshot__title">Budget Snapshot</h2>'
         '<div class="budget-snapshot__layout">'
         f"{rail}{breakdown}"
         "</div></div></div>"
@@ -2404,7 +2390,7 @@ def somnia_landing() -> None:
         section.main [data-testid="stMarkdownContainer"] .somnia-hero h1.somnia-title,
         .somnia-hero h1.somnia-title {
             font-family: "CloudySunday", "Fraunces", Georgia, serif !important;
-            font-size: clamp(5.25rem, 22vw, 13rem) !important;
+            font-size: clamp(3.35rem, 9.5vw, 6.75rem) !important;
             font-weight: 400 !important;
             letter-spacing: -0.02em !important;
             line-height: 1.02 !important;
@@ -2413,9 +2399,9 @@ def somnia_landing() -> None:
         }
     """
     _style = f"<style>{_ff}{_hero_title}</style>" if _ff else f"<style>{_hero_title}</style>"
-    st.markdown(
-        _style
-        + """
+    #streamlit runs this through markdown first: a line that starts with 4+ spaces becomes a code block, so indented html shows as raw text
+    _hero_html = textwrap.dedent(
+        """
         <div class="somnia-hero">
             <div class="somnia-cloud somnia-cloud--1"></div>
             <div class="somnia-cloud somnia-cloud--2"></div>
@@ -2426,9 +2412,9 @@ def somnia_landing() -> None:
                 <a class="somnia-hero-cta" href="#somnia-trip-form" target="_self" aria-label="Scroll to trip planning form">Start planning your dream vacation</a>
             </div>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        """
+    ).strip()
+    st.markdown(_style + "\n" + _hero_html, unsafe_allow_html=True)
 
 
 def _render_debug_section(plan: dict) -> None:
@@ -2547,7 +2533,7 @@ def render_plan(plan: dict) -> None:
         _render_stays_tab(plan)
 
     with tab4:
-        st.caption("Whole-trip USD bands from the planner model — use as a sanity check, not a quote.")
+        st.caption("Whole-trip USD bands from the planner. Use them as a sanity check, not a quote.")
         bd = plan.get("budget_breakdown")
         req = (
             "lodging_estimate",
@@ -2567,7 +2553,7 @@ def render_plan(plan: dict) -> None:
                 f"""
                 <div class="budget-snapshot">
                 <div class="budget-card">
-                    <h2 class="budget-snapshot__title">Budget snapshot</h2>
+                    <h2 class="budget-snapshot__title">Budget Snapshot</h2>
                     <div class="budget-head">Rough estimate</div>
                     <p class="budget-lede">{summary}</p>
                     <ul class="budget-bits">{bits}</ul>

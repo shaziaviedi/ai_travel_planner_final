@@ -2446,8 +2446,8 @@ def _round_money_usd(n: float) -> int:
 
 
 def format_usd_range(lo: int, hi: int) -> str:
-    #single string shape for ui rows so streamlit always sees consistent money text
-    return f"${lo:,}–${hi:,}"
+    #plain ascii range so budget strings never rely on unicode dashes
+    return f"${lo:,} to ${hi:,}"
 
 
 _BUDGET_LABEL_PRETTY = {
@@ -2508,9 +2508,11 @@ def _budget_summary_sentence(
 ) -> str:
     tlo, thi = breakdown["total_estimate"]  # type: ignore[misc]
     d = (destination or "").strip() or "your trip"
+    day_word = "day" if days == 1 else "days"
     return (
-        f"Rough rule-based window for {d} ({days} days): about {format_usd_range(tlo, thi)} USD total "
-        f"(lodging, food, local transit, light activities). Flights and big tours sit outside this band."
+        f"This budget view is a simple USD model for {d} across {days} {day_word}. "
+        f"A typical whole-trip band is about {format_usd_range(tlo, thi)} for lodging, food, local transit, and light activities. "
+        "Flights and large tours are not included."
     )
 
 
