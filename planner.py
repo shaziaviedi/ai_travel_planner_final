@@ -15,7 +15,7 @@ from model_utils import embed_texts
 ROOT = Path(__file__).resolve().parent
 DATASET = ROOT / "data" / "processed" / "travel_dataset.csv"
 
-#usd/day low/high per category at city multiplier 1.0 — sums land in sensible trip bands per tier
+#usd/day low/high per category at city multiplier 1.0; sums land in sensible trip bands per tier
 _BUDGET_CATEGORY_DAILY_USD: dict[str, dict[str, tuple[int, int]]] = {
     "budget": {
         "lodging": (28, 48),
@@ -46,6 +46,7 @@ _BUDGET_CATEGORY_DAILY_USD: dict[str, dict[str, tuple[int, int]]] = {
 #rough vs a generic mid-cost baseline; unknown cities fall back to 1.0
 CITY_COST_MULTIPLIERS: dict[str, float] = {
     "bangkok": 0.78,
+    "cape town": 0.82,
     "bali": 0.72,
     "budapest": 0.75,
     "cairo": 0.68,
@@ -67,6 +68,7 @@ CITY_COST_MULTIPLIERS: dict[str, float] = {
     "paris": 1.24,
     "zurich": 1.38,
     "new york": 1.32,
+    "new york city": 1.32,
     "san francisco": 1.30,
     "los angeles": 1.18,
     "sydney": 1.20,
@@ -145,7 +147,213 @@ LUXURY_ROW = (
     "skyline",
 )
 
-LUXURY_STAY = ("luxury", "suite", "boutique", "five star", "5 star", "concierge", "designer", "penthouse")
+LUXURY_STAY = (
+    "luxury",
+    "suite",
+    "boutique",
+    "five star",
+    "5 star",
+    "five-star",
+    "concierge",
+    "designer",
+    "penthouse",
+    "elegant",
+    "upscale",
+    "exclusive",
+    "premium",
+    "high-end",
+    "high end",
+    "opulent",
+    "lavish",
+    "ritz",
+)
+
+#extra lodging phrases for sleep-only keyword boosts (beyond LUXURY_STAY)
+SLEEP_SPLURGE_LEXICON: tuple[str, ...] = (
+    "grand hotel",
+    "five-star",
+    "5-star",
+    "spa ",
+    "rooftop pool",
+    "skybar",
+    "sky bar",
+    "butler",
+    "fine linens",
+    "palatial",
+    "design hotel",
+    "private pool",
+)
+SLEEP_BUDGET_LEXICON: tuple[str, ...] = (
+    "budget",
+    "affordable",
+    "cheap",
+    "economical",
+    "inexpensive",
+    "value",
+    "no-frills",
+    "no frills",
+    "simple stay",
+    "basic",
+    "backpacker",
+    "shared bathroom",
+    "dormitory",
+    "dorm bed",
+)
+SLEEP_MID_LEXICON: tuple[str, ...] = (
+    "mid-range",
+    "mid range",
+    "moderate",
+    "comfortable",
+    "business hotel",
+    "three-star",
+    "3-star",
+    "four-star",
+    "4 star",
+    "standard",
+    "pleasant",
+    "contemporary",
+    "stylish",
+)
+
+#same idea as build_dataset STAY_SIGNALS; lodging has to sound like a place to sleep
+LODGING_SIGNALS: tuple[str, ...] = (
+    "hotel",
+    "hostel",
+    "ryokan",
+    "inn",
+    "motel",
+    "lodge",
+    "capsule",
+    "guesthouse",
+    "guest house",
+    "b&b",
+    "b and b",
+    "resort",
+    "apartment hotel",
+    "lodging",
+    "rooms",
+    "per night",
+    "/night",
+    "a night",
+)
+
+#wikivoyage row text hints for itinerary ranking by budget tier (see/do/eat/drink only)
+SEE_DO_SPLURGE_LEXICON: tuple[str, ...] = (
+    "exclusive",
+    "vip",
+    "private tour",
+    "luxury",
+    "premium",
+    "designer",
+    "flagship",
+    "spa",
+    "wellness",
+    "chauffeur",
+    "concierge",
+    "helicopter",
+    "yacht",
+    "couture",
+    "personal shopper",
+    "members club",
+    "skip the line",
+    "skip-the-line",
+    "rooftop",
+    "observation deck",
+)
+SEE_DO_BUDGET_LEXICON: tuple[str, ...] = (
+    "free",
+    "no charge",
+    "no admission",
+    "public",
+    "park",
+    "plaza",
+    "promenade",
+    "self-guided",
+    "walking tour",
+    "viewpoint",
+    "street art",
+    "temple",
+    "shrine",
+    "market",
+    "beach",
+    "trail",
+    "hike",
+    "picnic",
+)
+SEE_DO_MID_LEXICON: tuple[str, ...] = (
+    "museum",
+    "gallery",
+    "neighborhood",
+    "guided tour",
+    "ticket",
+    "timed entry",
+)
+EAT_SPLURGE_LEXICON: tuple[str, ...] = (
+    "tasting menu",
+    "degustation",
+    "sommelier",
+    "michelin",
+    "chef's table",
+    "chef table",
+    "dress code",
+    "wine pairing",
+    "omakase",
+    "fine dining",
+    "course dinner",
+    "reservations recommended",
+)
+EAT_BUDGET_LEXICON: tuple[str, ...] = (
+    "street food",
+    "food stall",
+    "market stall",
+    "set menu",
+    "lunch special",
+    "bakery",
+    "counter",
+    "hole in the wall",
+    "food hall",
+    "food court",
+    "cheap eats",
+    "cafeteria",
+)
+EAT_MID_LEXICON: tuple[str, ...] = (
+    "bistro",
+    "brasserie",
+    "mid-range",
+    "moderate",
+    "neighborhood favorite",
+    "casual dinner",
+    "wine list",
+)
+DRINK_SPLURGE_LEXICON: tuple[str, ...] = (
+    "rooftop",
+    "champagne",
+    "lounge",
+    "speakeasy",
+    "craft cocktail",
+    "wine bar",
+    "sky bar",
+    "skybar",
+    "terrace",
+    "mixologist",
+)
+DRINK_BUDGET_LEXICON: tuple[str, ...] = (
+    "pub",
+    "happy hour",
+    "draft beer",
+    "standing bar",
+    "dive bar",
+    "local beer",
+    "house wine",
+    "inexpensive",
+)
+DRINK_MID_LEXICON: tuple[str, ...] = (
+    "wine bar",
+    "cocktail bar",
+    "neighborhood bar",
+    "patio",
+    "terrace",
+)
 
 
 def _load_dataset() -> pd.DataFrame:
@@ -182,7 +390,7 @@ def _canonical_destination_name(scoped: pd.DataFrame) -> str:
 
 
 def _clean_scalar(v: object) -> str:
-    #csv quirks sometimes stringify missing cells as "nan"—never surface that in the ui
+    #csv quirks sometimes stringify missing cells as "nan"; never surface that in the ui
     if v is None or (isinstance(v, float) and pd.isna(v)):
         return ""
     s = str(v).strip()
@@ -257,10 +465,109 @@ def _wants_luxury(vibe: str, budget: str, interests: str) -> bool:
         or "luxury" in b
         or "upscale" in b
         or "splurge" in b
+        or (budget or "").strip().casefold() == "splurge"
         or "high end" in b
         or "high-end" in b
         or "fine dining" in b
     )
+
+
+def _normalized_budget_key(budget: str) -> str:
+    k = (budget or "not sure").strip().casefold()
+    if k in ("splurge", "budget", "mid", "not sure"):
+        return k
+    return "not sure"
+
+
+def _lexicon_hit_count(text: str, terms: tuple[str, ...]) -> int:
+    return sum(1 for t in terms if t in text)
+
+
+def _intent_tokens(vibe: str, interests: str) -> list[str]:
+    raw = f"{vibe} {interests}".lower()
+    out: list[str] = []
+    for tok in re.split(r"[^\w\-]+", raw):
+        t = tok.strip().casefold()
+        if len(t) >= 4 and t not in out:
+            out.append(t)
+    return out[:24]
+
+
+def _sleep_query_extra(budget_key: str, vibe: str, interests: str) -> str:
+    #tight tail so sleep embeds hear budget tier even when the vibe box is empty
+    bk = _normalized_budget_key(budget_key)
+    tier: dict[str, str] = {
+        "splurge": (
+            "luxury hotels five star boutique elegant upscale premium suites "
+            "high-end exclusive refined memorable pampered designer concierge"
+        ),
+        "budget": (
+            "hostels guesthouses budget hotels affordable capsule dormitory "
+            "economical practical simple value lodging no-frills backpacker friendly"
+        ),
+        "mid": (
+            "mid-range hotels comfortable three-star four-star business hotel "
+            "moderate reliable everyday lodging contemporary"
+        ),
+        "not sure": "mixed hotels hostels boutique stays reasonable lodging",
+    }
+    bits = [tier.get(bk, tier["not sure"])]
+    if (vibe or "").strip():
+        bits.append((vibe or "").strip()[:160])
+    if (interests or "").strip():
+        bits.append((interests or "").strip()[:160])
+    return " ".join(bits)
+
+
+def _itinerary_budget_embed_tail(section_role: str, budget_key: str, vibe: str, interests: str) -> str:
+    #extra embed text so see/do/eat/drink pools hear budget tier, not just the hotel tab
+    bk = _normalized_budget_key(budget_key)
+    if section_role == "see_do":
+        if bk == "splurge":
+            return (
+                "premium exclusive flagship boutiques luxury shopping landmark tours designer galleries "
+                "spa wellness memorable elevated experiences private access rooftop views chauffeured"
+            )
+        if bk == "budget":
+            return (
+                "free public parks viewpoints self-guided walks street markets outdoor plazas beaches "
+                "temple grounds low-cost museums scenic overlooks picnics walking loops light spend"
+            )
+        if bk == "mid":
+            return (
+                "balanced mix classic sights timed museum entries neighborhood walking tours "
+                "mid-priced attractions one highlight per block sensible pacing"
+            )
+        return "varied pacing mix of paid and free highlights walking neighborhoods"
+    if section_role == "eat":
+        if bk == "splurge":
+            return (
+                "fine dining michelin omakase tasting menu chef table sommelier wine pairing "
+                "reservation-only upscale dinner special occasion elegant courses"
+            )
+        if bk == "budget":
+            return (
+                "street food stalls markets set menus lunch specials locals counters bakeries "
+                "cheap eats hole in the wall food halls commuter spots value"
+            )
+        if bk == "mid":
+            return "mid-range restaurants bistros casual dinner one nicer meal balanced tabs"
+        return "varied dining mix casual and sit-down"
+    if section_role == "drink":
+        if bk == "splurge":
+            return (
+                "rooftop bars champagne lounges speakeasy craft cocktails wine bars skyline terraces "
+                "late night upscale mixology"
+            )
+        if bk == "budget":
+            return (
+                "local pubs happy hour neighborhood bars draft beer standing bars inexpensive wine "
+                "simple drinks low cover"
+            )
+        if bk == "mid":
+            return "wine bars cocktail bars casual terraces mid-priced drinks neighborhood favorites"
+        return "mixed drinks bars nightlife"
+    return ""
 
 
 def _build_embedding_query(
@@ -280,10 +587,11 @@ def _build_embedding_query(
     ]
     if section_role == "eat" and _wants_food_focus(vibe, interests):
         parts.append("fine dining upscale michelin omakase tasting menu chef curated special occasion")
-    if section_role == "sleep" and (
-        _wants_luxury(vibe, budget, interests) or _wants_stay_focus(vibe, interests)
-    ):
-        parts.append("luxury boutique five star premium suites romantic designer memorable stay")
+    if section_role == "sleep":
+        parts.append(_sleep_query_extra(budget, vibe, interests))
+    tail = _itinerary_budget_embed_tail(section_role, budget, vibe, interests)
+    if tail.strip():
+        parts.append(tail.strip())
     if _wants_luxury(vibe, budget, interests):
         parts.append("splurge premium exclusive memorable high quality")
     return " ".join(p for p in parts if isinstance(p, str) and p.strip()).strip()
@@ -299,9 +607,9 @@ def _debug_row_snap(row: pd.Series) -> dict[str, str]:
     if len(desc) > _DEBUG_SNIP_LEN:
         desc = desc[: _DEBUG_SNIP_LEN - 1] + "…"
     return {
-        "section": _row_text(row, "section") or "—",
-        "title": _row_text(row, "title") or "—",
-        "description_snippet": desc or "—",
+        "section": _row_text(row, "section") or "-",
+        "title": _row_text(row, "title") or "-",
+        "description_snippet": desc or "-",
     }
 
 
@@ -326,6 +634,18 @@ def _ranking_queries(
     }
 
 
+def _itinerary_cos_weight(budget: str) -> float | None:
+    #slightly more keyword weight for day plans when the user picked a clear tier
+    bk = _normalized_budget_key(budget)
+    if bk == "splurge":
+        return 0.56
+    if bk == "budget":
+        return 0.57
+    if bk == "mid":
+        return 0.63
+    return None
+
+
 def _keyword_boost(
     row: pd.Series,
     section_role: str,
@@ -333,24 +653,29 @@ def _keyword_boost(
     budget: str,
     interests: str,
 ) -> float:
-    #cheap nudge on top of cosine so price cues and luxury words actually move the list
+    #cheap nudge on top of cosine so price cues move the list without trashing unrelated rows
     text = f"{_row_text(row, 'title')} {_row_text(row, 'description')}".lower()
     intent = _intent_blob(vibe, budget, interests)
     boost = 0.0
+    bk = _normalized_budget_key(budget)
+    band = ""
+    if "estimated_cost_band" in row.index:
+        band = str(row.get("estimated_cost_band", "") or "").lower()
 
     if _wants_luxury(vibe, budget, interests):
         boost += 0.055 * min(4, sum(1 for w in LUXURY_ROW if w in text))
         if section_role == "eat":
             boost += 0.05 * min(3, sum(1 for w in ("omakase", "michelin", "sommelier", "tasting", "degustation") if w in text))
 
-    if "estimated_cost_band" in row.index:
-        band = str(row.get("estimated_cost_band", "") or "").lower()
-        if "splurge" in intent and band == "splurge":
+    if band:
+        if bk == "splurge" and band == "splurge":
+            boost += 0.18
+        if bk == "budget" and band == "budget":
             boost += 0.14
-        if "budget" in intent and band == "budget":
-            boost += 0.06
+        if bk == "mid" and band == "mid":
+            boost += 0.11
         if _wants_luxury(vibe, budget, interests) and band == "splurge":
-            boost += 0.1
+            boost += 0.08
 
     if section_role == "eat" and _wants_food_focus(vibe, interests):
         boost += 0.045 * min(
@@ -358,13 +683,74 @@ def _keyword_boost(
             sum(1 for w in ("michelin", "omakase", "sommelier", "tasting", "sushi", "chef", "wine pairing") if w in text),
         )
 
-    if section_role == "sleep" and _wants_luxury(vibe, budget, interests):
-        boost += 0.07 * min(3, sum(1 for w in LUXURY_STAY if w in text))
+    sec = str(row.get("section", "") or "")
+    if section_role == "see_do":
+        if bk == "splurge":
+            boost += 0.074 * min(9, _lexicon_hit_count(text, SEE_DO_SPLURGE_LEXICON))
+            if sec == "Do":
+                boost += 0.035 * min(4, sum(1 for w in ("spa", "wellness", "yacht", "helicopter", "vip") if w in text))
+        elif bk == "budget":
+            boost += 0.078 * min(9, _lexicon_hit_count(text, SEE_DO_BUDGET_LEXICON))
+            if any(w in text for w in ("free", "no charge", "no admission")):
+                boost += 0.09
+        elif bk == "mid":
+            boost += 0.055 * min(7, _lexicon_hit_count(text, SEE_DO_MID_LEXICON))
+        vhits = sum(1 for tok in _intent_tokens(vibe, interests) if tok in text)
+        boost += 0.022 * min(6, vhits)
 
-    if section_role == "drink" and any(w in intent for w in ("fancy", "luxury", "splurge", "cocktail", "wine", "rooftop")):
-        boost += 0.04 * min(3, sum(1 for w in ("cocktail", "wine", "whisky", "rooftop", "lounge", "champagne") if w in text))
+    if section_role == "eat":
+        if bk == "splurge":
+            boost += 0.082 * min(9, _lexicon_hit_count(text, EAT_SPLURGE_LEXICON))
+            boost += 0.042 * min(4, sum(1 for w in ("michelin", "omakase", "sommelier", "chef") if w in text))
+        elif bk == "budget":
+            boost += 0.088 * min(9, _lexicon_hit_count(text, EAT_BUDGET_LEXICON))
+            if band == "budget":
+                boost += 0.11
+            if band == "splurge" and "street" not in text and "market" not in text:
+                boost -= 0.065
+        elif bk == "mid":
+            boost += 0.058 * min(7, _lexicon_hit_count(text, EAT_MID_LEXICON))
+            if band == "mid":
+                boost += 0.09
+        vhits_e = sum(1 for tok in _intent_tokens(vibe, interests) if tok in text)
+        boost += 0.024 * min(6, vhits_e)
 
-    return float(min(1.0, boost))
+    if section_role == "drink":
+        if bk == "splurge":
+            boost += 0.092 * min(8, _lexicon_hit_count(text, DRINK_SPLURGE_LEXICON))
+        elif bk == "budget":
+            boost += 0.085 * min(8, _lexicon_hit_count(text, DRINK_BUDGET_LEXICON))
+        elif bk == "mid":
+            boost += 0.062 * min(7, _lexicon_hit_count(text, DRINK_MID_LEXICON))
+        if any(w in intent for w in ("fancy", "luxury", "splurge", "cocktail", "wine", "rooftop")):
+            boost += 0.042 * min(3, sum(1 for w in ("cocktail", "wine", "whisky", "rooftop", "lounge", "champagne") if w in text))
+
+    if section_role == "sleep":
+        ns = _lexicon_hit_count(text, SLEEP_SPLURGE_LEXICON)
+        nb = _lexicon_hit_count(text, SLEEP_BUDGET_LEXICON)
+        nm = _lexicon_hit_count(text, SLEEP_MID_LEXICON)
+        lux_stay_hits = sum(1 for w in LUXURY_STAY if w in text)
+        if bk == "splurge":
+            boost += 0.095 * min(9, ns)
+            boost += 0.058 * min(6, lux_stay_hits)
+            boost += 0.036 * min(4, nm)
+            if "hostel" in text and ns == 0 and lux_stay_hits == 0 and band != "splurge":
+                boost -= 0.12
+        elif bk == "budget":
+            boost += 0.098 * min(9, nb)
+            boost += 0.068 * min(5, sum(1 for w in ("hostel", "capsule", "dorm", "motel") if w in text))
+            if band == "splurge" and "hostel" not in text and "capsule" not in text:
+                boost -= 0.1
+        elif bk == "mid":
+            boost += 0.074 * min(7, nm)
+            boost += 0.038 * min(4, nb)
+            boost += 0.034 * min(4, ns)
+        else:
+            boost += 0.03 * min(6, ns + nm + nb)
+        vhits_s = sum(1 for tok in _intent_tokens(vibe, interests) if tok in text)
+        boost += 0.025 * min(7, vhits_s)
+
+    return float(max(0.0, min(1.0, boost)))
 
 
 def _intent_rank(
@@ -374,6 +760,9 @@ def _intent_rank(
     budget: str,
     interests: str,
     section_role: str,
+    *,
+    cos_weight: float | None = None,
+    attach_scores: bool = False,
 ) -> pd.DataFrame:
     #never call the embedder on an empty frame
     if df.empty:
@@ -384,7 +773,8 @@ def _intent_rank(
 
     texts: list[str] = []
     for _, row in df.iterrows():
-        blob = f"{row.get('section', '')} {_row_text(row, 'title')} {_row_text(row, 'description')}"
+        band = _clean_scalar(row.get("estimated_cost_band", "")) if "estimated_cost_band" in row.index else ""
+        blob = f"{row.get('section', '')} {_row_text(row, 'title')} {_row_text(row, 'description')} {band}"
         texts.append(str(blob)[:900])
 
     q = embed_texts([q_text])
@@ -394,10 +784,17 @@ def _intent_rank(
         [_keyword_boost(row, section_role, vibe, budget, interests) for _, row in df.iterrows()],
         dtype=np.float32,
     )
-    #blend keeps embeddings primary but lets splurge+luxury rows jump when the user asks for it
-    combined = 0.68 * cos + 0.32 * boosts
+    cw = 0.68 if cos_weight is None else float(cos_weight)
+    bw = 1.0 - cw
+    combined = cw * cos + bw * boosts
     order = np.argsort(-combined)
-    return df.iloc[order].reset_index(drop=True)
+    out = df.iloc[order].reset_index(drop=True)
+    if attach_scores:
+        out = out.copy()
+        out["_sr_cos"] = cos[order]
+        out["_sr_boost"] = boosts[order]
+        out["_sr_comb"] = combined[order]
+    return out
 
 
 def _itinerary_pool(
@@ -414,7 +811,15 @@ def _itinerary_pool(
         good = pool[pool["usable_for_itinerary"] == 1]
         if not good.empty:
             pool = good
-    return _intent_rank(pool, display_dest, trip_vibe, budget, must_see_interests, section_role)
+    return _intent_rank(
+        pool,
+        display_dest,
+        trip_vibe,
+        budget,
+        must_see_interests,
+        section_role,
+        cos_weight=_itinerary_cos_weight(budget),
+    )
 
 
 def _sleep_pool(
@@ -429,29 +834,359 @@ def _sleep_pool(
         good = pool[pool["usable_for_stay"] == 1]
         if not good.empty:
             pool = good
-    return _intent_rank(pool, display_dest, trip_vibe, budget, must_see_interests, "sleep")
+    return _intent_rank(
+        pool,
+        display_dest,
+        trip_vibe,
+        budget,
+        must_see_interests,
+        "sleep",
+        cos_weight=0.52,
+        attach_scores=True,
+    )
 
 
-def _pick_pair(
+def _activity_from_row(row: pd.Series, display_dest: str) -> tuple[str, str]:
+    #one listing title plus a trimmed blurb for itinerary bullets
+    real_title = _row_text(row, "title").strip()
+    desc = clean_description_for_display(_row_text(row, "description"), soft_target=200, hard_max=320)
+    title = real_title if real_title else _display_title(row, display_dest)
+    return title, desc
+
+
+def _gather_unique_rows(
     pool: pd.DataFrame,
-    day_index: int,
-    stride: int,
+    day_i: int,
+    want: int,
     display_dest: str,
-) -> tuple[str, str]:
-    if pool.empty:
-        return "", ""
-    #stride spreads picks a bit across long weekends without feeling totally random
+) -> list[tuple[str, str]]:
+    #walk ranked rows with a day-dependent hop so repeats across days feel less copy-paste
+    if pool.empty or want <= 0:
+        return []
     n = len(pool)
-    for step in range(n):
-        j = (day_index * stride + step) % n
-        row = pool.iloc[j]
-        real_title = _row_text(row, "title")
-        desc = clean_description_for_display(_row_text(row, "description"))
-        if not real_title and not desc:
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    base = (day_i * 13) % n
+    hop = max(1, min(5, n // max(want, 2)))
+    for k in range(min(n * 2, want * 8)):
+        idx = (base + k * hop) % n
+        row = pool.iloc[idx]
+        t, d = _activity_from_row(row, display_dest)
+        if not t and not d:
             continue
-        title = real_title if real_title else _display_title(row, display_dest)
-        return title, desc
-    return "", ""
+        key = t.casefold()
+        if key in seen:
+            continue
+        if key:
+            seen.add(key)
+        out.append((t, d))
+        if len(out) >= want:
+            break
+    return out
+
+
+def _pair_line(title: str, desc: str) -> str:
+    #single human-readable bullet body; title stays plain text for escaping upstream
+    t = (title or "").strip()
+    d = (
+        clean_description_for_display((desc or "").strip(), soft_target=170, hard_max=260)
+        if desc
+        else ""
+    )
+    if not t and not d:
+        return ""
+    if t and d:
+        return f"{t}: {d}"
+    return t or d
+
+
+def _dedupe_lines(lines: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for line in lines:
+        key = line.split(":", 1)[0].strip().casefold() if ":" in line else line.strip().casefold()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(line)
+    return out
+
+
+def _fallback_see_bullets(dest: str, interests: str, budget_key: str) -> list[str]:
+    tail = ""
+    if interests.strip():
+        tail = f" Keep \"{_clip(interests, 72)}\" in mind when you pick the first anchor stop."
+    bk = _normalized_budget_key(budget_key)
+    if bk == "splurge":
+        return [
+            f"Line up one headline sight or gallery moment in {dest} before queues peak; save shopping arcades for golden hour.",
+            f"Pair architecture with a slow café pause in {dest}; splurge days read better with fewer but richer stops.{tail}",
+        ]
+    if bk == "budget":
+        return [
+            f"Thread {dest} with parks, plazas, and self-paced walks—free anchors keep the morning full without a ticket stack.",
+            f"Pick one low-cost museum window or viewpoint in {dest}, then let street rhythm carry you until lunch.{tail}",
+        ]
+    return [
+        f"Walk the historic or arts quarter while {dest} is still quiet; queues are gentler before lunch.",
+        f"Pick one flagship sight for the morning and leave slack for alleys, markets, or a long coffee.{tail}",
+    ]
+
+
+def _fallback_afternoon(dest: str, budget_key: str) -> list[str]:
+    bk = _normalized_budget_key(budget_key)
+    if bk == "splurge":
+        return [
+            f"Keep the middle of the day in {dest} unhurried—spa, flagship retail, or a private-ish tour beats a cross-town sprint.",
+            f"Let one tony neighborhood carry the afternoon in {dest}; depth reads more premium than a city-wide skim.",
+        ]
+    if bk == "budget":
+        return [
+            f"Stay inside one neighborhood of {dest} for the afternoon so you are not paying time in transit tax.",
+            "If legs feel heavy, swap a museum hour for a shady park bench and people watching.",
+        ]
+    return [
+        f"Stay inside one neighborhood of {dest} for the afternoon so you are not paying time in transit tax.",
+        "If legs feel heavy, swap a museum hour for a shady park bench and people watching.",
+    ]
+
+
+def _fallback_evening(dest: str, vibe: str, budget_key: str) -> list[str]:
+    v = vibe.strip()
+    tail = f" You hinted at {v}, so keep the pace kind." if v else ""
+    bk = _normalized_budget_key(budget_key)
+    if bk == "splurge":
+        return [
+            f"Ease out of sightseeing before dinner; golden hour makes {dest} read differently on foot.{tail}",
+            f"Tonight in {dest}, favor a grown-up lounge, rooftop pour, or tasting flight—let the tab match the tier you chose.",
+        ]
+    if bk == "budget":
+        return [
+            f"Ease out of sightseeing before dinner; golden hour makes {dest} read differently on foot.{tail}",
+            f"Happy hour corners and neighborhood pubs in {dest} usually beat tourist-strip prices for the same stories.",
+        ]
+    return [
+        f"Ease out of sightseeing before dinner; golden hour makes {dest} read differently on foot.{tail}",
+        f"Later, pick a calmer bar, tea room, or hotel lounge within walking distance of your last stop.",
+    ]
+
+
+def _fallback_food(dest: str, budget_key: str, vibe: str) -> list[str]:
+    b = (budget_key or "not sure").strip().lower()
+    if b == "splurge":
+        tier = "Book one standout dinner table; keep lunch casual so the day still breathes."
+    elif b == "budget":
+        tier = "Markets, lunch specials, and bakeries keep costs honest without feeling like a compromise."
+    else:
+        tier = "Mix one nicer sit-down with easy lunches so the trip stays grounded."
+    vv = f" Let {vibe.strip()} steer cuisine style, not just decor." if vibe.strip() else ""
+    return [
+        tier + vv,
+        f"Ask someone working locally what they eat on a random Tuesday in {dest}; midweek picks stay calmer.",
+    ]
+
+
+def _day_voice(day_n: int, *lines: str) -> str:
+    #same trip inputs should not clone identical intros on every day
+    if not lines:
+        return ""
+    return lines[(max(1, int(day_n)) - 1) % len(lines)]
+
+
+def _optional_note_lines(dest: str, budget_key: str, interests: str, day_n: int) -> list[str]:
+    lines: list[str] = []
+    bk = _normalized_budget_key(budget_key)
+    if interests.strip():
+        lines.append(
+            f"If \"{_clip(interests, 88)}\" stalls, ask a barista or hotel desk in {dest} for the version locals still like."
+        )
+    if bk == "budget":
+        lines.append("Carry a little cash; small vendors sometimes nudge you off-plan with card minimums.")
+        lines.append("Stack free anchors first, then spend only where flavor or access is clearly worth it.")
+    elif bk == "splurge":
+        lines.append("Lock limited-seat splurges before you pack; walk-in luxury gets picky fast.")
+        lines.append(
+            f"Build slack between marquee bookings so {dest} still feels like a trip, not a receipt sprint."
+        )
+    elif bk == "mid":
+        lines.append("One paid highlight plus wandering usually beats stacking mid-priced tickets back-to-back.")
+    if day_n % 2 == 1:
+        lines.append(f"Offline maps back to your stay make late nights in {dest} feel calmer.")
+    else:
+        lines.append("Leave one thirty-minute hole empty; the best detours rarely show up in ranked lists.")
+    return lines[:4]
+
+
+def _morning_budget_opening(day_n: int, dest: str, budget_key: str) -> str:
+    bk = _normalized_budget_key(budget_key)
+    if bk == "splurge":
+        return _day_voice(
+            day_n,
+            f"Treat the first hour in {dest} as a small flex: one marquee sight or a polished gallery row before lines thicken.",
+            f"Anchor sunrise energy in {dest} with something camera-worthy—signature architecture or a flagship quarter still feels sleepy.",
+            f"Let {dest} open with one elevated set piece you actually care about; splurge days read cheap when you stack three back-to-back.",
+        )
+    if bk == "budget":
+        return _day_voice(
+            day_n,
+            f"Start {dest} on free rails—plazas, waterfront walks, temple grounds—so spend shows up only where flavor is worth it.",
+            f"Bank an early win in {dest} without a ticket: markets waking up, street rhythm, window light on public squares.",
+            f"Open with self-paced miles in {dest}; cafés, benches, and viewpoint stairs buy atmosphere without grazing your wallet.",
+        )
+    if bk == "mid":
+        return _day_voice(
+            day_n,
+            f"Ease into {dest} with one anchor sight plus slack; mid-budget trips stay happy when you leave escape hatches open.",
+            f"Start practical in {dest}: one timed ticket or museum block, then room for serendipity before prices climb at night.",
+        )
+    return ""
+
+
+def _morning_intro(day_n: int, dest: str, vibe: str, interests: str, budget_key: str) -> str:
+    #no day-of-week style prefix; the ui already shows which day this is
+    opener = _morning_budget_opening(day_n, dest, budget_key)
+    v = vibe.strip()
+    ins = interests.strip()
+    if v:
+        core = _day_voice(
+            day_n,
+            f"You said {v}, so treat the morning as a soft landing before crowds stack up.",
+            f"You said {v}; ship one small proof of it before noon so the day has soul early.",
+            f"With {v} in mind, keep the first moves gentle so {dest} does not feel like a sprint.",
+            f"You named {v}; let the opening hour lean that way while foot traffic is still thin.",
+            f"{v} was the brief; give the morning one honest gesture toward it before the noise rises.",
+        )
+    else:
+        core = _day_voice(
+            day_n,
+            f"Let {dest} wake up around you before the queues get chatty.",
+            f"Start while {dest} is still stretching so you steal an hour before the tempo jumps.",
+            f"Slide into {dest} while sidewalks are still forgiving and light is kind.",
+            f"Give the first hour breathing room so {dest} does not read like a checklist sprint.",
+            f"Catch {dest} in a quieter register if you can; afternoons rarely rewind the clock.",
+        )
+    if ins:
+        core += f" Keep \"{_clip(ins, 64)}\" on a sticky note when you aim the first stop."
+    if opener:
+        return f"{opener} {core}"
+    return core
+
+
+def _afternoon_budget_layer(dest: str, day_n: int, budget_key: str) -> str:
+    bk = _normalized_budget_key(budget_key)
+    if bk == "splurge":
+        return _day_voice(
+            day_n,
+            f"Afternoon in {dest}: slow retail, spa blocks, or a private-ish experience beat racing cross-town.",
+            f"Splurge pacing in {dest} favors depth—one polished neighborhood, fewer taxi hops, longer loitering.",
+        )
+    if bk == "budget":
+        return _day_voice(
+            day_n,
+            f"Keep the middle of the day in {dest} on public energy—parks, markets, self-guided walks—so tickets stay optional.",
+            f"Stretch the afternoon in {dest} with shade, steps, and cheap thrills; buses and plazas often beat pricey hop tours.",
+        )
+    if bk == "mid":
+        return _day_voice(
+            day_n,
+            f"Balance the afternoon in {dest}: one paid highlight, then neighborhood drift so the tab stays sensible.",
+            f"Mid-budget rhythm in {dest}: pair a timed entry with wandering so you never feel locked into spendy hops.",
+        )
+    return ""
+
+
+def _afternoon_intro(dest: str, blob: str, day_n: int, budget_key: str) -> str:
+    if _nature_heavy(blob):
+        base = _day_voice(
+            day_n,
+            f"Lean into fresh-air loops near {dest}, hydrate, and bail before you feel cooked.",
+            f"Stack outdoor pockets early near {dest} while energy is high; save the roof or cafe for later.",
+            f"Treat air and shade as gear near {dest}; long sun without breaks makes everything feel harder.",
+        )
+    elif _cityish(blob):
+        base = _day_voice(
+            day_n,
+            f"Keep transit shallow; one quarter of {dest} is enough canvas for a full day.",
+            f"Anchor this afternoon to one neighborhood island in {dest} so backtracking stays rare.",
+            f"Prefer one direction through {dest} instead of crisscrossing; diagonal days feel expensive.",
+            f"Let one slice of {dest} be enough today; depth reads richer than a city-wide skim.",
+        )
+    else:
+        base = _day_voice(
+            day_n,
+            f"Trade one indoor block for open space so {dest} still feels airy.",
+            f"Swap a boxed hour for a wandering corridor of {dest} so the afternoon keeps texture.",
+            f"Balance a head-down hour with something tactile in {dest}; light hands-on time resets momentum.",
+        )
+    layer = _afternoon_budget_layer(dest, day_n, budget_key)
+    if layer:
+        return f"{layer} {base}"
+    return base
+
+
+def _evening_intro(dest: str, budget_key: str, wants_lux: bool, day_n: int) -> str:
+    bk = (budget_key or "not sure").strip().casefold()
+    if wants_lux or bk == "splurge":
+        return _day_voice(
+            day_n,
+            f"In {dest}, let the day taper, then save a little sparkle for where you sip.",
+            f"Save one polished hour in {dest} for golden light, then let the night feel unhurried.",
+            f"Tonight in {dest}, favor fewer stops with more room between them; luxury likes space.",
+        )
+    if bk == "budget":
+        return _day_voice(
+            day_n,
+            f"Wind down gently in {dest}; low-key hangs still feel full without a spendy tab.",
+            f"Evenings in {dest} reward simple rituals: a walk, a snack window, a calm corner seat.",
+            f"Pick a small, repeatable wind-down in {dest} so your wallet and nervous system agree.",
+        )
+    if bk == "mid":
+        return _day_voice(
+            day_n,
+            f"Tonight in {dest}, aim for one sit-down or craft pour, then keep the route walkable so tabs stay mid-range.",
+            f"Trade noise for a slower last lap in {dest} so tomorrow still feels possible.",
+            f"Let the last hours in {dest} be mostly on foot; short hops read calmer than one more venue.",
+        )
+    return _day_voice(
+        day_n,
+        f"Trade noise for a slower last lap in {dest} so tomorrow still feels possible.",
+        f"Let the last hours in {dest} be mostly on foot; short hops read calmer than one more venue.",
+        f"Close the loop near where you sleep so {dest} ends as a neighborhood story, not a dash.",
+    )
+
+
+def _food_intro_block(dest: str, budget_key: str, wants_food: bool, vibe: str, day_n: int) -> str:
+    b = (budget_key or "not sure").strip().lower()
+    if b == "budget":
+        core = _day_voice(
+            day_n,
+            f"Stretch the day in {dest} with midday markets, bakeries, and shared plates.",
+            f"Let lunch carry {dest} today: counters, steam, and baker windows beat a stiff prix fixe.",
+            f"Thread {dest} with snacks and shared tables so flavor stays high and the bill stays honest.",
+        )
+    elif b == "splurge":
+        core = _day_voice(
+            day_n,
+            f"Pick one memorable sit-down in {dest} and balance with casual bites.",
+            f"Book the marquee table once in {dest}, then let street food and cafes do the heavy lifting.",
+            f"Splurge where {dest} truly shines, then coast on simple meals so the trip keeps range.",
+        )
+    else:
+        core = _day_voice(
+            day_n,
+            f"Mix a nicer dinner with easy lunches in {dest} so you can still wander.",
+            f"Alternate anchor meals with light picks in {dest} so taste stays sharp without slowing you down.",
+            f"Let {dest} show you two speeds: one slow meal, one grab-and-go rhythm that keeps you moving.",
+        )
+    if wants_food:
+        core += " You signalled food matters, so follow cravings, not only rankings."
+    elif vibe.strip():
+        core += f" Let {vibe.strip()} nudge cuisine style, not just venue flash."
+    return core
+
+
+def _section_dict(intro: str, bullets: list[str]) -> dict[str, object]:
+    return {"intro": intro.strip(), "bullets": [b for b in bullets if b and str(b).strip()]}
 
 
 def _build_itinerary_days(
@@ -460,41 +1195,205 @@ def _build_itinerary_days(
     eat: pd.DataFrame,
     drink: pd.DataFrame,
     display_dest: str,
-) -> list[dict[str, str]]:
-    #different strides keep eat/drink from mirroring see/do every single day
-    out: list[dict[str, str]] = []
+    trip_vibe: str,
+    budget: str,
+    must_see_interests: str,
+) -> list[dict[str, object]]:
+    #rule-based day blocks; ranked rows fill bullets, templates cover thin pools without sounding robotic
+    vibe = (trip_vibe or "").strip()
+    interests = (must_see_interests or "").strip()
+    budget_key = (budget or "not sure").strip().lower()
+    blob = _intent_blob(vibe, budget_key, interests)
+    wants_lux = _wants_luxury(vibe, budget_key, interests)
+    wants_food = _wants_food_focus(vibe, interests)
+
+    out: list[dict[str, object]] = []
     for i in range(days):
-        mt, md = _pick_pair(see_do, i, 1, display_dest)
-        ft, fd = _pick_pair(eat, i, 3, display_dest)
-        dt, dd = _pick_pair(drink, i, 2, display_dest)
-        if not mt and not ft:
-            mt = f"explore {display_dest}"
-            md = "no ranked see/do/eat rows left for this city in the dataset; widen the scrape or relax filters."
-        if not ft:
-            ft = "local meal"
-            fd = "pick a busy lunch street or market near where you are staying."
-        if not dt and not dd:
-            dt = f"evening in {display_dest}"
-            dd = "try a calmer bar strip or a hotel lounge when you want to unwind."
+        day_n = i + 1
+        see_rows = _gather_unique_rows(see_do, i, 6, display_dest)
+        eat_rows = _gather_unique_rows(eat, i, 4, display_dest)
+        drink_rows = _gather_unique_rows(drink, i, 3, display_dest)
+
+        m_pairs = see_rows[0:2]
+        m_bullets = _dedupe_lines([_pair_line(t, d) for t, d in m_pairs if _pair_line(t, d)])
+        if not m_bullets:
+            m_bullets = _fallback_see_bullets(display_dest, interests, budget_key)
+        elif len(m_bullets) == 1:
+            fb = _fallback_see_bullets(display_dest, interests, budget_key)
+            m_bullets.append(fb[1] if len(fb) > 1 else fb[0])
+        m_bullets = m_bullets[:3]
+
+        a_pairs = see_rows[2:4] if len(see_rows) >= 3 else see_rows[1:3]
+        a_bullets = _dedupe_lines([_pair_line(t, d) for t, d in a_pairs if _pair_line(t, d)])
+        if not a_bullets:
+            a_bullets = _fallback_afternoon(display_dest, budget_key)
+        elif len(a_bullets) == 1:
+            fb = _fallback_afternoon(display_dest, budget_key)
+            a_bullets.append(fb[1] if len(fb) > 1 else fb[0])
+        seen_m = {
+            x.split(":", 1)[0].strip().casefold() if ":" in x else x.strip().casefold() for x in m_bullets
+        }
+        a_bullets = [
+            x
+            for x in a_bullets
+            if (x.split(":", 1)[0].strip().casefold() if ":" in x else x.strip().casefold()) not in seen_m
+        ]
+        if not a_bullets:
+            a_bullets = _fallback_afternoon(display_dest, budget_key)
+        a_bullets = a_bullets[:3]
+
+        ev: list[str] = []
+        if drink_rows:
+            ev.append(_pair_line(*drink_rows[0]))
+        if len(drink_rows) > 1:
+            ln = _pair_line(*drink_rows[1])
+            if ln:
+                ev.append(ln)
+        if len(ev) < 2 and len(see_rows) > 4:
+            ln = _pair_line(*see_rows[4])
+            if ln:
+                ev.append(ln)
+        if len(ev) < 2:
+            ev.extend(_fallback_evening(display_dest, vibe, budget_key))
+        ev = _dedupe_lines(ev)[:4]
+
+        food_lines = _dedupe_lines([_pair_line(t, d) for t, d in eat_rows[:3] if _pair_line(t, d)])
+        if not food_lines:
+            food_lines = _fallback_food(display_dest, budget_key, vibe)
+        elif len(food_lines) == 1:
+            fb = _fallback_food(display_dest, budget_key, vibe)
+            food_lines.append(fb[1] if len(fb) > 1 else fb[0])
+        food_lines = food_lines[:4]
+
+        notes = _optional_note_lines(display_dest, budget_key, interests, day_n)
+
+        if not see_rows and not eat_rows:
+            thin = (
+                "Dataset matches are thin for this city slice; treat bullets as guardrails and "
+                "swap in fresher picks from locals when you land."
+            )
+            m_bullets = [thin, *m_bullets][:4]
+
         out.append(
             {
-                "day": i + 1,
-                "main_activity_title": mt,
-                "main_activity_description": md,
-                "food_title": ft,
-                "food_description": fd,
-                "drink_title": dt,
-                "drink_description": dd,
+                "day": day_n,
+                "morning_plan": _section_dict(
+                    _morning_intro(day_n, display_dest, vibe, interests, budget_key), m_bullets
+                ),
+                "afternoon_plan": _section_dict(_afternoon_intro(display_dest, blob, day_n, budget_key), a_bullets),
+                "evening_plan": _section_dict(_evening_intro(display_dest, budget_key, wants_lux, day_n), ev),
+                "food_plan": _section_dict(
+                    _food_intro_block(display_dest, budget_key, wants_food, vibe, day_n), food_lines
+                ),
+                "optional_notes": _section_dict("", notes),
             }
         )
     return out
 
 
-def _build_stays(sleep_ranked: pd.DataFrame, display_dest: str, limit: int = 6) -> list[dict[str, str]]:
-    rows: list[dict[str, str]] = []
-    for _, row in sleep_ranked.head(limit * 2).iterrows():
+def _row_sounds_like_lodging(row: pd.Series) -> bool:
+    blob = f"{_row_text(row, 'title')} {_row_text(row, 'description')}".casefold()
+    return any(sig in blob for sig in LODGING_SIGNALS)
+
+
+def _splurge_stay_gate(row: pd.Series) -> bool:
+    text = f"{_row_text(row, 'title')} {_row_text(row, 'description')}".lower()
+    band = str(row.get("estimated_cost_band", "") or "").lower()
+    if band == "splurge":
+        return True
+    if _lexicon_hit_count(text, SLEEP_SPLURGE_LEXICON) >= 1:
+        return True
+    if sum(1 for w in LUXURY_STAY if w in text) >= 1:
+        return True
+    return False
+
+
+def _budget_stay_gate(row: pd.Series) -> bool:
+    text = f"{_row_text(row, 'title')} {_row_text(row, 'description')}".lower()
+    band = str(row.get("estimated_cost_band", "") or "").lower()
+    if band == "budget":
+        return True
+    if any(w in text for w in ("hostel", "capsule", "dorm", "dormitory", "motel")):
+        return True
+    if _lexicon_hit_count(text, SLEEP_BUDGET_LEXICON) >= 1:
+        return True
+    if band == "splurge" and "hostel" not in text and "capsule" not in text:
+        return False
+    return band in ("mid", "unknown", "")
+
+
+def _stay_passes_tier_gate(row: pd.Series, bk: str) -> bool:
+    if bk == "splurge":
+        return _splurge_stay_gate(row)
+    if bk == "budget":
+        return _budget_stay_gate(row)
+    return True
+
+
+def _stay_match_reason(row: pd.Series, bk: str, vibe: str, interests: str) -> str:
+    parts: list[str] = []
+    title = _row_text(row, "title").lower()
+    desc = _row_text(row, "description").lower()
+    text = f"{title} {desc}"
+    band = str(row.get("estimated_cost_band", "") or "").strip().lower()
+    if band and band != "unknown":
+        parts.append(f'Listing cost band is tagged "{band}".')
+    luxish = _lexicon_hit_count(text, SLEEP_SPLURGE_LEXICON) + sum(1 for w in LUXURY_STAY if w in text)
+    if bk == "splurge" and luxish > 0:
+        parts.append("Wording leans premium, luxury, or boutique lodging.")
+    elif bk == "budget" and (
+        _lexicon_hit_count(text, SLEEP_BUDGET_LEXICON) > 0
+        or "hostel" in text
+        or "capsule" in text
+    ):
+        parts.append("Reads budget-conscious, hostel-style, or practical on price.")
+    elif bk == "mid" and _lexicon_hit_count(text, SLEEP_MID_LEXICON) > 0:
+        parts.append("Sounds like a mid-range or everyday-comfort stay.")
+    hits = [t for t in _intent_tokens(vibe, interests) if t in text][:4]
+    if hits:
+        parts.append(f"Touches your trip keywords: {', '.join(hits)}.")
+    if not parts:
+        parts.append("Best semantic fit in the sleep listings we have for this city and your inputs.")
+    return " ".join(parts)
+
+
+def _build_stays(
+    sleep_ranked: pd.DataFrame,
+    display_dest: str,
+    budget_key: str,
+    vibe: str,
+    interests: str,
+    limit: int = 6,
+) -> tuple[list[dict[str, str]], str | None]:
+    notice: str | None = None
+    if sleep_ranked.empty:
+        return [], None
+    bk = _normalized_budget_key(budget_key)
+    mask_lodge = sleep_ranked.apply(_row_sounds_like_lodging, axis=1)
+    mask_tier = sleep_ranked.apply(lambda r: _stay_passes_tier_gate(r, bk), axis=1)
+    pick = sleep_ranked.loc[mask_lodge & mask_tier].reset_index(drop=True)
+    if pick.empty:
+        if bk == "splurge":
+            notice = (
+                f"No sleep listings for {display_dest} in our scraped data clearly read as premium or high-end "
+                "for a splurge trip, so we are not inventing posh picks. Try a dedicated hotel search or another guide."
+            )
+        elif bk == "budget":
+            notice = (
+                f"No sleep listings here read confidently as budget or hostel-style for {display_dest}. "
+                "A hostel-focused site may be safer than stretching these rows."
+            )
+        else:
+            notice = (
+                f"We could not find Wikivoyage sleep rows that still look like real lodging for {display_dest} "
+                "under your filters."
+            )
+        return [], notice
+
+    rows_out: list[dict[str, str]] = []
+    for _, row in pick.iterrows():
         title = _row_text(row, "title")
-        desc = clean_description_for_display(_row_text(row, "description"))
+        desc = clean_description_for_display(_row_text(row, "description"), soft_target=150, hard_max=280)
         if not title and not desc:
             continue
         if not title:
@@ -502,16 +1401,22 @@ def _build_stays(sleep_ranked: pd.DataFrame, display_dest: str, limit: int = 6) 
         band = _clean_scalar(row.get("estimated_cost_band", "")) if "estimated_cost_band" in row.index else ""
         if not band:
             band = "unknown"
-        rows.append(
+        rows_out.append(
             {
                 "title": title,
                 "description": desc,
                 "estimated_cost_band": band,
+                "match_reason": _stay_match_reason(row, bk, vibe, interests),
             }
         )
-        if len(rows) >= limit:
+        if len(rows_out) >= limit:
             break
-    return rows
+    if not rows_out:
+        return [], (
+            f"Sleep listings for {display_dest} did not yield readable stay blurbs after filtering, "
+            "so we are not padding the list."
+        )
+    return rows_out, notice
 
 
 def _nature_heavy(blob: str) -> bool:
@@ -583,7 +1488,7 @@ def build_checklist(destination: str, days: int, vibe: str, budget: str) -> list
     if n >= 7:
         items.append("for a week-ish run: laundry access, extra tops, or a light detergent sheet beats overpacking")
     if n >= 12:
-        items.append("longer trip: schedule a mid-trip reset—laundry, shoe swap, or one chill day")
+        items.append("longer trip: schedule a mid-trip reset (laundry, shoe swap, or one chill day)")
 
     if _cityish(blob):
         items.append("download the local transit app and save offline maps for the neighborhoods you will actually walk")
@@ -613,7 +1518,14 @@ def build_checklist(destination: str, days: int, vibe: str, budget: str) -> list
         if line not in seen:
             seen.add(line)
             ordered.append(line)
-    return ordered
+
+    def _cap_first(s: str) -> str:
+        t = s.strip()
+        if not t:
+            return t
+        return t[0].upper() + t[1:]
+
+    return [_cap_first(x) for x in ordered]
 
 
 def packing_list(vibe: str, days: int, destination: str) -> dict[str, list[str]]:
@@ -843,6 +1755,7 @@ def get_recommendations(
             "checklist": build_checklist(raw_dest or "your trip", days, vibe, budget_key),
             "itinerary": [],
             "stays": [],
+            "stay_suggestions_notice": None,
             "packing": packing_list(f"{vibe} {interests}".strip(), days, raw_dest),
             "budget_breakdown": bd,
             "budget_summary": _budget_summary_sentence(raw_dest or "your trip", days, bd),
@@ -870,10 +1783,10 @@ def get_recommendations(
 
     checklist = build_checklist(display_dest, days, vibe, budget_key)
 
-    itinerary = _build_itinerary_days(days, see_do, eat, drink, display_dest)
-    stays = _build_stays(sleep_ranked, display_dest)
-    if not stays:
-        stays = []
+    itinerary = _build_itinerary_days(
+        days, see_do, eat, drink, display_dest, vibe, budget_key, interests
+    )
+    stays, stay_notice = _build_stays(sleep_ranked, display_dest, budget_key, vibe, interests)
 
     packing = packing_list(f"{vibe} {interests}".strip(), days, display_dest)
     bd = build_budget_breakdown(display_dest, days, budget_key, vibe, interests)
@@ -889,6 +1802,7 @@ def get_recommendations(
         "checklist": checklist,
         "itinerary": itinerary,
         "stays": stays,
+        "stay_suggestions_notice": stay_notice,
         "packing": packing,
         "budget_breakdown": bd,
         "budget_summary": _budget_summary_sentence(display_dest, days, bd),

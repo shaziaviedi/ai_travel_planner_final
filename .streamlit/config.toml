@@ -1,0 +1,10 @@
+#plum-first theme so checkboxes, progress, and primary actions match inject_styles
+[theme]
+primaryColor = "#8b74c4"
+backgroundColor = "#0f1118"
+secondaryBackgroundColor = "#161a2c"
+textColor = "#dce3f4"
+font = "sans serif"
+
+[client]
+toolbarMode = "minimal"

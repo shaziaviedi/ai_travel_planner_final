@@ -23,7 +23,35 @@ BASE = "https://en.wikivoyage.org/wiki/"
 RAW_DIR = Path(__file__).resolve().parent / "data" / "raw"
 OUT_CSV = RAW_DIR / "wikivoyage_raw.csv"
 
-DESTINATIONS = ["Tokyo", "Kyoto", "Osaka", "Seoul", "Singapore"]
+#(canonical city label in the app, one or more english wikivoyage article titles to merge into it)
+#los angeles hub page mostly points at districts; we pull core districts so see/do/eat/sleep still populate
+DESTINATION_SCRAPES: list[tuple[str, tuple[str, ...]]] = [
+    ("Tokyo", ("Tokyo",)),
+    ("Kyoto", ("Kyoto",)),
+    ("Osaka", ("Osaka",)),
+    ("Seoul", ("Seoul",)),
+    ("Singapore", ("Singapore",)),
+    ("Jakarta", ("Jakarta",)),
+    ("Bangkok", ("Bangkok",)),
+    ("Bali", ("Bali",)),
+    ("Paris", ("Paris",)),
+    ("London", ("London",)),
+    ("Rome", ("Rome",)),
+    ("Barcelona", ("Barcelona",)),
+    ("Amsterdam", ("Amsterdam",)),
+    ("New York City", ("New York City",)),
+    (
+        "Los Angeles",
+        ("Los Angeles", "Hollywood", "Santa Monica", "Downtown Los Angeles"),
+    ),
+    ("San Francisco", ("San Francisco",)),
+    ("Istanbul", ("Istanbul",)),
+    ("Dubai", ("Dubai",)),
+    ("Sydney", ("Sydney",)),
+    ("Cape Town", ("Cape Town",)),
+]
+
+DESTINATIONS: list[str] = [name for name, _ in DESTINATION_SCRAPES]
 SECTIONS = ["See", "Do", "Eat", "Drink", "Sleep"]
 
 #wikivoyage boilerplate we never want in a recommendation csv
@@ -348,17 +376,23 @@ def scrape_all() -> Path:
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     all_rows: list[dict[str, str]] = []
 
-    for dest in DESTINATIONS:
-        url = page_url(dest)
-        time.sleep(1.0)
-        html = fetch_html(url)
-        all_rows.extend(extract_page(html, url, dest))
+    for canonical, wiki_titles in DESTINATION_SCRAPES:
+        for wiki_title in wiki_titles:
+            url = page_url(wiki_title)
+            time.sleep(1.0)
+            html = fetch_html(url)
+            all_rows.extend(extract_page(html, url, canonical))
 
     fieldnames = ["destination", "section", "title", "description", "source_url"]
     with OUT_CSV.open("w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
         w.writerows(all_rows)
+
+    print("supported destinations (this scrape):")
+    for i, name in enumerate(DESTINATIONS, start=1):
+        print(f"  {i:2}. {name}")
+    print(f"total: {len(DESTINATIONS)}")
 
     return OUT_CSV
 
